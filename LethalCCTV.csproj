@@ -1,0 +1,258 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Shared settings live in ..\Directory.Build.props. -->
+  <PropertyGroup>
+    <AssemblyName>LethalCCTV</AssemblyName>
+    <RootNamespace>LethalCCTV</RootNamespace>
+    <Description>Y4NGZ surveillance and CCTV systems</Description>
+    <Version>1.1.0</Version>
+    <!-- OutlineEffect's HDRP custom pass overrides CustomPass.Execute, which the publicizer
+         widens to public; the source guards the modifier on this symbol. Same NoWarn as
+         Y4NGZCompany for the publicized-type-vs-reference-assembly CS0436 duplicate. -->
+    <DefineConstants>$(DefineConstants);Y4NGZCOMPANY_CUSTOMPASS_PUBLIC</DefineConstants>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Same local-DLL resolution Y4NGZCompany uses: these ship as loose plugin
+         DLLs inside the test profile rather than as restorable packages.
+         InteractiveTerminalAPI is deliberately absent here - only Y4NGZCompany's
+         LGUShopApplication uses it. LethalCCTV emits no reference to it (#561). -->
+    <DawnLibReferencePath Condition="'$(DawnLibReferencePath)' == '' and Exists('$(BepInExPlugins)\TeamXiaolan-DawnLib\DawnLib\com.github.teamxiaolan.dawnlib.dll')">$(BepInExPlugins)\TeamXiaolan-DawnLib\DawnLib\com.github.teamxiaolan.dawnlib.dll</DawnLibReferencePath>
+    <LethalNetworkApiReferencePath Condition="'$(LethalNetworkApiReferencePath)' == '' and Exists('$(BepInExPlugins)\xilophor-LethalNetworkAPI\LethalNetworkAPI\LethalNetworkAPI.dll')">$(BepInExPlugins)\xilophor-LethalNetworkAPI\LethalNetworkAPI\LethalNetworkAPI.dll</LethalNetworkApiReferencePath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- CCTV runtime bundles. These moved here with the code that loads them; the
+         source-path fallbacks match the Unity project layout Y4NGZCompany used. -->
+    <CctvCameraBundleSourcePath Condition="Exists('..\..\runtime-assets\lethalcctv-camera.meshbundle')">..\..\runtime-assets\lethalcctv-camera.meshbundle</CctvCameraBundleSourcePath>
+    <CctvPlayerAnimationBundleSourcePath Condition="Exists('..\..\runtime-assets\y4ngz-cctv-playeranimations.lethalbundle')">..\..\runtime-assets\y4ngz-cctv-playeranimations.lethalbundle</CctvPlayerAnimationBundleSourcePath>
+    <CctvPlayerAnimationBundleSourcePath Condition="'$(CctvPlayerAnimationBundleSourcePath)' == ''">C:\Unity\Projects\LethalModAssets_v2\AssetBundles\StandaloneWindows\y4ngz-cctv-playeranimations.lethalbundle</CctvPlayerAnimationBundleSourcePath>
+    <CctvViewmodelBundleSourcePath Condition="Exists('..\..\runtime-assets\y4ngz-cctv-viewmodel.animationbundle')">..\..\runtime-assets\y4ngz-cctv-viewmodel.animationbundle</CctvViewmodelBundleSourcePath>
+    <CctvViewmodelBundleSourcePath Condition="'$(CctvViewmodelBundleSourcePath)' == ''">C:\Unity\Projects\LethalModAssets_v2\AssetBundles\StandaloneWindows\y4ngz-cctv-viewmodel.animationbundle</CctvViewmodelBundleSourcePath>
+    <CctvStationPropsBundleSourcePath Condition="Exists('..\..\runtime-assets\y4ngz-cctv-stationprops.lethalbundle')">..\..\runtime-assets\y4ngz-cctv-stationprops.lethalbundle</CctvStationPropsBundleSourcePath>
+    <CctvStationPropsBundleSourcePath Condition="'$(CctvStationPropsBundleSourcePath)' == ''">C:\Unity\Projects\LethalModAssets_v2\AssetBundles\StandaloneWindows\y4ngz-cctv-stationprops.lethalbundle</CctvStationPropsBundleSourcePath>
+    <CctvOutlineEffectBundleSourcePath Condition="Exists('..\..\runtime-assets\y4ngz-outlineeffect.lethalbundle')">..\..\runtime-assets\y4ngz-outlineeffect.lethalbundle</CctvOutlineEffectBundleSourcePath>
+    <CctvOutlineEffectBundleSourcePath Condition="'$(CctvOutlineEffectBundleSourcePath)' == ''">C:\Unity\Projects\LethalModAssets_v2\AssetBundles\StandaloneWindows\y4ngz-outlineeffect.lethalbundle</CctvOutlineEffectBundleSourcePath>
+    <!-- The interior fixtures (CCTVMainframeSupport, CompanyStash) this plugin used to
+         borrow from the contracts mod's lgucontracts.bundle. Built by
+         Assets\Editor\BuildLethalCctvFixturesBundle.cs in the Unity project (#393). -->
+    <CctvFixturesBundleSourcePath Condition="Exists('..\..\runtime-assets\lethalcctv-fixtures.bundle')">..\..\runtime-assets\lethalcctv-fixtures.bundle</CctvFixturesBundleSourcePath>
+    <CctvFixturesBundleSourcePath Condition="'$(CctvFixturesBundleSourcePath)' == ''">C:\Unity\Projects\LethalModAssets_v2\AssetBundles\LethalCctvFixtures\lethalcctv-fixtures.bundle</CctvFixturesBundleSourcePath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Same two-layout hazard Y4NGZCompany documents: Gale names a locally imported
+         package's plugin directory after the package, so a re-imported profile holds
+         `LethalCCTV` while a hand-made one holds `y4ngz-LethalCCTV`. Deploying into the
+         directory the profile does not load from is silent. Prefer the one that exists,
+         newest layout first. -->
+    <DeployTarget Condition="'$(DeployTarget)' == '' and Exists('$(BepInExPlugins)\LethalCCTV')">$(BepInExPlugins)\LethalCCTV</DeployTarget>
+    <DeployTarget Condition="'$(DeployTarget)' == ''">$(BepInExPlugins)\y4ngz-LethalCCTV</DeployTarget>
+    <NetcodePatchDependencyFile>$(MSBuildProjectDirectory)\obj\$(Configuration)\netcode-patch-dependencies.txt</NetcodePatchDependencyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.2" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" PrivateAssets="all" />
+    <PackageReference Include="Evaisa.LethalLib" Version="1.2.0" PrivateAssets="all" />
+    <PackageReference Include="HarmonyX" Version="2.10.2" PrivateAssets="all" />
+    <PackageReference Include="LethalCompany.GameLibs.Steam" Version="81.0.5-ngd.0" Publicize="true" PrivateAssets="all" />
+    <PackageReference Include="Rune580.Mods.LethalCompany.InputUtils" Version="0.7.13" PrivateAssets="all" />
+    <!-- LethalCCTVConfig derives from SyncedConfig2 and carries [SyncedEntryField] host
+         authority, so CSync moves here with it. -->
+    <PackageReference Include="Sigurd.BepInEx.CSync" Version="5.0.1" PrivateAssets="all" />
+    <PackageReference Include="UnityEngine.Modules" Version="2022.3.62" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="Xilophor.LethalNetworkAPI" Version="3.4.2" PrivateAssets="all" Condition="'$(LethalNetworkApiReferencePath)' == ''" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="DunGen">
+      <HintPath>$(GameManagedDir)\DunGen.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(GameManagedDir)\Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Netcode.Runtime">
+      <HintPath>$(GameManagedDir)\Unity.Netcode.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Netcode.Components">
+      <HintPath>$(GameManagedDir)\Unity.Netcode.Components.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AIModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.AIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.VFXModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.VFXModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GameManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(GameManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="com.github.teamxiaolan.dawnlib" Condition="'$(DawnLibReferencePath)' != ''">
+      <HintPath>$(DawnLibReferencePath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="LethalNetworkAPI" Condition="'$(LethalNetworkApiReferencePath)' != ''">
+      <HintPath>$(LethalNetworkApiReferencePath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Y4NGZCore\Y4NGZCore.csproj" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- #579 CCTV controls sticky note. The note reuses the vanilla StickyNoteItem
+         mesh and material at runtime, so the only asset this mod ships is the
+         repainted base-colour map - no AssetBundle and no HDRP shader of our own.
+         Embedded rather than copied beside the DLL so it cannot go missing. -->
+    <EmbeddedResource Include="assets\textures\Y4NGZ_CCTV_StickyNote.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\runtime-assets\lethalcctv-nightvision.shaderbundle" Link="lethalcctv-nightvision.shaderbundle" CopyToOutputDirectory="Always" />
+    <Content Include="..\..\runtime-assets\shipturret.turretbundle" Link="shipturret.turretbundle" CopyToOutputDirectory="Always" />
+    <Content Include="$(CctvCameraBundleSourcePath)" Link="lethalcctv-camera.meshbundle" CopyToOutputDirectory="Always" Condition="'$(CctvCameraBundleSourcePath)' != ''" />
+    <Content Include="$(CctvPlayerAnimationBundleSourcePath)" Link="y4ngz-cctv-playeranimations.lethalbundle" CopyToOutputDirectory="Always" Condition="Exists('$(CctvPlayerAnimationBundleSourcePath)')" />
+    <Content Include="$(CctvViewmodelBundleSourcePath)" Link="y4ngz-cctv-viewmodel.animationbundle" CopyToOutputDirectory="Always" Condition="Exists('$(CctvViewmodelBundleSourcePath)')" />
+    <Content Include="..\..\runtime-assets\y4ngz-cctv-operator.manifest.json" Link="y4ngz-cctv-operator.manifest.json" CopyToOutputDirectory="Always" />
+    <Content Include="..\..\runtime-assets\y4ngz-cctv-operator-viewmodel.manifest.json" Link="y4ngz-cctv-operator-viewmodel.manifest.json" CopyToOutputDirectory="Always" />
+    <!-- Deployed as .stationbundle (NOT .lethalbundle) so LethalLevelLoader does not
+         auto-load it and break our own AssetBundle.LoadFromFile call. -->
+    <Content Include="$(CctvStationPropsBundleSourcePath)" Link="y4ngz-cctv-stationprops.stationbundle" CopyToOutputDirectory="Always" Condition="Exists('$(CctvStationPropsBundleSourcePath)')" />
+    <!-- Deployed as .bundle (NOT .lethalbundle) so LethalLevelLoader does not
+         auto-load it and break our own AssetBundle.LoadFromFile call. -->
+    <Content Include="$(CctvOutlineEffectBundleSourcePath)" Link="y4ngz-outlineeffect.bundle" CopyToOutputDirectory="Always" Condition="Exists('$(CctvOutlineEffectBundleSourcePath)')" />
+    <!-- Named exactly as CctvFixtureAssets.CctvFixtureBundleFileName expects beside the
+         assembly, and .bundle (NOT .lethalbundle) so LethalLevelLoader leaves it for our
+         own AssetBundle.LoadFromFile. -->
+    <Content Include="$(CctvFixturesBundleSourcePath)" Link="lethalcctv-fixtures.bundle" CopyToOutputDirectory="Always" Condition="Exists('$(CctvFixturesBundleSourcePath)')" />
+    <Content Include="Facility\Cameras\data\camera-placement-reviews.json" Link="camera-placement-reviews.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Mainframe code is owned by LethalCCTV, while the existing tracked loose-audio
+         source remains under the contracts asset tree because Contracted also reuses
+         Hack_Success.wav. Link the complete Mainframe set into this project's output
+         so a clean LethalCCTV build does not depend on stale Y4NGZCompany bin files. -->
+    <Content Include="..\Y4NGZCompany\assets\audio\contracts\Mainframe\*.wav;..\Y4NGZCompany\assets\audio\contracts\Mainframe\*.ogg;..\Y4NGZCompany\assets\audio\contracts\Mainframe\*.mp3"
+             Link="ContractAudio\Mainframe\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\audio\surveillance\*.ogg" Link="Audio\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\audio\surveillance\*.wav" Link="Audio\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\audio\surveillance\*.mp3" Link="Audio\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The CCTV alarm owns this slam in standalone installs. Keep the tracked source
+         with Contracted's original cue, but package one copy beside LethalCCTV. -->
+    <Content Include="..\Y4NGZCompany\assets\audio\contracts\Containment Breach\freesound_community-metallic-door-shut-98740.mp3"
+             Link="Audio\freesound_community-metallic-door-shut-98740.mp3"
+             CopyToOutputDirectory="PreserveNewest" />
+    <!-- #561 split: MainframeAudio resolves ContractAudio\Mainframe beside this
+         assembly (its cctvAssemblyDir probe) before falling back to Contracted's
+         plugin folder. The clips are authored in the Contracted project's asset
+         tree but the mainframe is owned by LethalCCTV, so a standalone install
+         must carry its own copy. -->
+    <Content Include="..\Y4NGZCompany\assets\audio\contracts\Mainframe\*.wav" Link="ContractAudio\Mainframe\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Y4NGZCompany\assets\audio\contracts\Mainframe\*.ogg" Link="ContractAudio\Mainframe\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Y4NGZCompany\assets\audio\contracts\Mainframe\*.mp3" Link="ContractAudio\Mainframe\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="ValidateLethalCCTVReferencePaths" BeforeTargets="ResolveReferences">
+    <Error Text="Missing DawnLib reference. Install TeamXiaolan-DawnLib 0.9.25 in TestProfileRoot or set DawnLibReferencePath." Condition="'$(DawnLibReferencePath)' == ''" />
+  </Target>
+
+  <!-- Netcode patching is per-assembly and is NOT optional here. MainframeSupport,
+       CompanyStashController and MiniVault carry [ServerRpc]/[ClientRpc] members, and
+       NetcodeRuntimeBootstrap.Initialize is handed this assembly at load; without the
+       ILPostProcessor pass the generated RPC handlers do not exist and the bootstrap's
+       registration scan throws at runtime. Debug builds skip this target, so a Debug
+       DLL in a live profile is expected to fail that check. -->
+  <Target Name="NetcodePatchAndDeploy" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <WriteLinesToFile File="$(NetcodePatchDependencyFile)" Lines="@(ReferencePathWithRefAssemblies->'%(Identity)')" Overwrite="true" />
+    <!-- #613 task 2.2 (V3): delete last build's weave marker FIRST, so the Error below tests
+         THIS build. bin\Release is incremental - without this, a build that wove successfully
+         leaves <assembly>_original.dll behind, and a later build that silently skips (exit 0,
+         e.g. DebugType went to none) satisfies Exists() with the stale artifact and ships an
+         unwoven DLL past the guard. The marker has to be evidence of the run being guarded, not
+         of any run. -->
+    <Delete Files="$(OutputPath)$(AssemblyName)_original.dll" />
+    <Exec Command="netcode-patch -uv 2022.3.9 -nv 1.12.0 -tv 1.0.0 &quot;$(TargetPath)&quot; --dependency-file &quot;$(NetcodePatchDependencyFile)&quot;" ConsoleToMSBuild="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="NetcodePatchOutput" />
+    </Exec>
+    <!-- The tool has TWO ways of not weaving, and only one of them is a fault.
+         "already been patched" happens on a repeat Release build: MSBuild skips the compile when
+         nothing changed, but this AfterTargets="Build" target still runs, so $(TargetPath) is the
+         DLL the PREVIOUS build already wove. That is correct and must not fail the build - but the
+         Delete above has just removed the marker, so Exists() alone would report it as a failure.
+         The dangerous case - "Couldn't find debug information ... forced to skip" - prints no such
+         line, so distinguishing them by the tool's own output is exact rather than heuristic.
+         Verified against NetcodePatcher 4.5.0 by running both paths against Debug DLL copies. -->
+    <PropertyGroup>
+      <NetcodePatchAlreadyWoven>$(NetcodePatchOutput.Contains('already been patched'))</NetcodePatchAlreadyWoven>
+    </PropertyGroup>
+    <!-- #613 task 2.2 (V2): netcode-patch EXITS 0 when it skips. Verified with the shipped
+         tool (NetcodePatcher 4.5.0): with no .pdb beside the assembly it logs
+         "Couldn't find debug information (X.dll), forced to skip" and returns success, so the
+         Exec above passes and an UNWOVEN assembly is deployed - every RPC in the package then
+         silently never arrives, and NetcodeRuntimeBootstrap.Initialize throws at Awake. The
+         tool writes <assembly>_original.dll next to the output only when it actually patched,
+         so its absence is the one reliable signal that the weave did not happen. Fail the
+         build here rather than discover it in a lobby. -->
+    <Error Condition="!Exists('$(OutputPath)$(AssemblyName)_original.dll') And '$(NetcodePatchAlreadyWoven)' != 'true'" Text="netcode-patch did not weave $(AssemblyName).dll - no $(AssemblyName)_original.dll was produced. The tool exits 0 when it skips (most often: no $(AssemblyName).pdb beside the assembly, e.g. DebugType set to none). Do not deploy this build." />
+    <!-- Copies the patched DLL and records the deploy stamp. Shared with the four
+         sibling plugin projects; see src\Directory.Build.targets. CallTarget, not
+         DependsOnTargets: the copy must happen after netcode-patch has rewritten
+         $(TargetPath), not before this target body runs. -->
+    <CallTarget Targets="DeployY4NGZAssemblyWithStamp" />
+    <ItemGroup>
+      <CctvOutputAssets Include="$(OutputPath)*.bundle;$(OutputPath)*.lethalbundle;$(OutputPath)*.animationbundle;$(OutputPath)*.stationbundle;$(OutputPath)*.turretbundle;$(OutputPath)*.shaderbundle;$(OutputPath)*.meshbundle;$(OutputPath)*.json"
+                        Exclude="$(OutputPath)$(AssemblyName).deps.json" />
+      <CctvOutputAudio Include="$(OutputPath)Audio\*.ogg;$(OutputPath)Audio\*.mp3;$(OutputPath)Audio\*.wav" />
+      <CctvMainframeAudio Include="$(OutputPath)ContractAudio\Mainframe\*.ogg;$(OutputPath)ContractAudio\Mainframe\*.mp3;$(OutputPath)ContractAudio\Mainframe\*.wav" />
+      <!-- Additive-copy hazard, identical to the one Y4NGZCompany guards for its own
+           Audio folder: FacilityAudioClipLoader resolves each cue by base name across
+           .wav/.ogg/.mp3, so a superseded .mp3 left behind in the profile can shadow
+           the .wav/.ogg that replaced it. $(DeployTarget)\Audio is fed exclusively by
+           the assets\audio\surveillance\* globs, so anything there this build did not
+           produce is stale by definition. -->
+      <DeployedCctvAudio Include="$(DeployTarget)\Audio\**\*.*" />
+      <ExpectedDeployedCctvAudio Include="@(CctvOutputAudio->'$(DeployTarget)\Audio\%(Filename)%(Extension)')" />
+      <StaleDeployedCctvAudio Include="@(DeployedCctvAudio)" Exclude="@(ExpectedDeployedCctvAudio)" />
+      <!-- Mainframe's loose audio is likewise owned by this deploy target. Keep the
+           live directory exact so removed or format-replaced cues cannot linger. -->
+      <DeployedCctvMainframeAudio Include="$(DeployTarget)\ContractAudio\Mainframe\*.*" />
+      <ExpectedDeployedCctvMainframeAudio Include="@(CctvMainframeAudio->'$(DeployTarget)\ContractAudio\Mainframe\%(Filename)%(Extension)')" />
+      <StaleDeployedCctvMainframeAudio Include="@(DeployedCctvMainframeAudio)" Exclude="@(ExpectedDeployedCctvMainframeAudio)" />
+    </ItemGroup>
+    <Delete Files="@(StaleDeployedCctvAudio)" TreatErrorsAsWarnings="true" Condition="'@(CctvOutputAudio)' != ''" />
+    <Delete Files="@(StaleDeployedCctvMainframeAudio)" TreatErrorsAsWarnings="true" Condition="'@(CctvMainframeAudio)' != ''" />
+    <Copy SourceFiles="@(CctvOutputAssets)" DestinationFolder="$(DeployTarget)" SkipUnchangedFiles="true" Condition="'@(CctvOutputAssets)' != ''" />
+    <MakeDir Directories="$(DeployTarget)\Audio" Condition="'@(CctvOutputAudio)' != ''" />
+    <Copy SourceFiles="@(CctvOutputAudio)" DestinationFolder="$(DeployTarget)\Audio" SkipUnchangedFiles="true" Condition="'@(CctvOutputAudio)' != ''" />
+    <MakeDir Directories="$(DeployTarget)\ContractAudio\Mainframe" Condition="'@(CctvMainframeAudio)' != ''" />
+    <Copy SourceFiles="@(CctvMainframeAudio)" DestinationFolder="$(DeployTarget)\ContractAudio\Mainframe" SkipUnchangedFiles="true" Condition="'@(CctvMainframeAudio)' != ''" />
+  </Target>
+
+</Project>

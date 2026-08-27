@@ -1,0 +1,725 @@
+{
+    "schemaVersion": 1,
+    "reviews": [
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:06.0511559Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "LivingRoomTile(Clone)",
+            "tileBoundsSize": {
+                "x": 23.936912536621095,
+                "y": 7.083582401275635,
+                "z": 16.09792137145996
+            },
+            "tileDoorwayCount": 2,
+            "cameraIndex": 12,
+            "displayLabel": "CAM_12",
+            "mountMode": "Ceiling",
+            "placementSource": "strict",
+            "surfaceKind": "Ceiling",
+            "placementCornerId": 19,
+            "tileLocalPosition": {
+                "x": 9.399996757507325,
+                "y": 5.481129169464111,
+                "z": -4.400035381317139
+            },
+            "tileLocalEuler": {
+                "x": 16.449840545654298,
+                "y": 254.76580810546876,
+                "z": 359.9835510253906
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 4.802011566162889e-10,
+                "y": -1.0,
+                "z": 2.808560566336382e-7
+            },
+            "heightAboveFloor": -0.3958740234375,
+            "centerSightDistance": 5.685965538024902,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "ShelfB (6)",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 5.685965538024902,
+            "placementScore": 500.3335876464844
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:16.2388561Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "CloverTile(Clone)",
+            "tileBoundsSize": {
+                "x": 7.9999098777771,
+                "y": 8.039358139038086,
+                "z": 8.00011157989502
+            },
+            "tileDoorwayCount": 3,
+            "cameraIndex": 7,
+            "displayLabel": "CAM_07",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 3,
+            "tileLocalPosition": {
+                "x": 1.27651846408844,
+                "y": 2.8278796672821047,
+                "z": 0.17584528028964997
+            },
+            "tileLocalEuler": {
+                "x": 48.77980422973633,
+                "y": 232.78860473632813,
+                "z": 240.26626586914063
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 4.17584228515625,
+            "centerSightDistance": 7.005586624145508,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "mesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 7.005586624145508,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:22.7359316Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "GreenhouseTile(Clone)",
+            "tileBoundsSize": {
+                "x": 7.918123722076416,
+                "y": 6.74705171585083,
+                "z": 24.00031089782715
+            },
+            "tileDoorwayCount": 1,
+            "cameraIndex": 13,
+            "displayLabel": "CAM_13",
+            "mountMode": "Ceiling",
+            "placementSource": "support-retarget",
+            "surfaceKind": "Ceiling",
+            "placementCornerId": 19,
+            "tileLocalPosition": {
+                "x": 5.273565769195557,
+                "y": -0.48458486795425417,
+                "z": 5.408627033233643
+            },
+            "tileLocalEuler": {
+                "x": 26.042591094970704,
+                "y": 273.40460205078127,
+                "z": 359.9912414550781
+            },
+            "tileLocalSurfaceNormal": {
+                "x": -2.138403765172825e-8,
+                "y": -1.0,
+                "z": 1.7666361884494109e-7
+            },
+            "heightAboveFloor": 5.749420166015625,
+            "centerSightDistance": 13.086299896240235,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "DirtCollider (1)",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 13.086299896240235,
+            "placementScore": 505.00469970703127
+        },
+        {
+            "rating": "TooLow",
+            "reason": "raise minimum mount height for this tile",
+            "timestampUtc": "2026-06-04T16:25:24.7827263Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "ManorStartRoomSmall(Clone)",
+            "tileBoundsSize": {
+                "x": 24.0020751953125,
+                "y": 21.33706283569336,
+                "z": 23.999927520751954
+            },
+            "tileDoorwayCount": 8,
+            "cameraIndex": 0,
+            "displayLabel": "CAM_00",
+            "mountMode": "Wall",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 0,
+            "tileLocalPosition": {
+                "x": -4.456459999084473,
+                "y": 0.1998138427734375,
+                "z": 7.495099067687988
+            },
+            "tileLocalEuler": {
+                "x": 355.0,
+                "y": 16.088619232177736,
+                "z": -5.356468335548925e-8
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 0.2002105712890625,
+            "centerSightDistance": 7.707810878753662,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 3,
+            "forwardHitName": "StartRoomMeshes",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 7.707810878753662,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "PoorCoverage",
+            "reason": "prefer wider doorway/room coverage",
+            "timestampUtc": "2026-06-04T16:25:28.2444497Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "BedroomTileB(Clone)",
+            "tileBoundsSize": {
+                "x": 12.864364624023438,
+                "y": 5.374525547027588,
+                "z": 10.99885082244873
+            },
+            "tileDoorwayCount": 1,
+            "cameraIndex": 5,
+            "displayLabel": "CAM_05",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 1,
+            "tileLocalPosition": {
+                "x": 7.951461315155029,
+                "y": 6.934733867645264,
+                "z": -2.5758261680603029
+            },
+            "tileLocalEuler": {
+                "x": 58.898006439208987,
+                "y": 279.7264099121094,
+                "z": 278.3541259765625
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 0.2476348876953125,
+            "centerSightDistance": 12.65371322631836,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "BedroomTileMesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 12.65371322631836,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:31.7445456Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "CloverTile(Clone)",
+            "tileBoundsSize": {
+                "x": 8.001534461975098,
+                "y": 8.038371086120606,
+                "z": 7.999480247497559
+            },
+            "tileDoorwayCount": 3,
+            "cameraIndex": 4,
+            "displayLabel": "CAM_04",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 0,
+            "tileLocalPosition": {
+                "x": -1.399998664855957,
+                "y": 2.7708911895751955,
+                "z": -2.0040040016174318
+            },
+            "tileLocalEuler": {
+                "x": 82.67417907714844,
+                "y": 46.96480941772461,
+                "z": 47.199153900146487
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 1.996002197265625,
+            "centerSightDistance": 13.504528045654297,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "BedroomTileMesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 13.504528045654297,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "PoorCoverage",
+            "reason": "prefer wider doorway/room coverage",
+            "timestampUtc": "2026-06-04T16:25:35.2355217Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "BedroomTile(Clone)",
+            "tileBoundsSize": {
+                "x": 12.864333152770996,
+                "y": 5.372960090637207,
+                "z": 10.999652862548829
+            },
+            "tileDoorwayCount": 1,
+            "cameraIndex": 11,
+            "displayLabel": "CAM_11",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 3,
+            "tileLocalPosition": {
+                "x": 7.932916641235352,
+                "y": 6.9347333908081059,
+                "z": -0.38128864765167239
+            },
+            "tileLocalEuler": {
+                "x": 40.06234359741211,
+                "y": 176.37448120117188,
+                "z": 174.3776092529297
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 3.61871337890625,
+            "centerSightDistance": 4.737697124481201,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "BedroomTileMesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 4.737697124481201,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "BlockedView",
+            "reason": "penalize short center sight and blocked frustum",
+            "timestampUtc": "2026-06-04T16:25:39.0007273Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "HallwayTileTypeC(Clone)",
+            "tileBoundsSize": {
+                "x": 16.000450134277345,
+                "y": 6.859830379486084,
+                "z": 23.999813079833986
+            },
+            "tileDoorwayCount": 3,
+            "cameraIndex": 2,
+            "displayLabel": "CAM_02",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 2,
+            "tileLocalPosition": {
+                "x": -0.20000608265399934,
+                "y": 5.754809856414795,
+                "z": -4.976268291473389
+            },
+            "tileLocalEuler": {
+                "x": 19.889209747314454,
+                "y": 132.4376220703125,
+                "z": -0.0005474816425703466
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 5.7548065185546879,
+            "centerSightDistance": 6.112946033477783,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "Cube (3)",
+            "forwardHitLayer": 11,
+            "forwardHitDistance": 6.112946033477783,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:41.6192780Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "LivingRoomTile(Clone)",
+            "tileBoundsSize": {
+                "x": 23.936912536621095,
+                "y": 7.083582401275635,
+                "z": 16.09792137145996
+            },
+            "tileDoorwayCount": 2,
+            "cameraIndex": 12,
+            "displayLabel": "CAM_12",
+            "mountMode": "Ceiling",
+            "placementSource": "strict",
+            "surfaceKind": "Ceiling",
+            "placementCornerId": 19,
+            "tileLocalPosition": {
+                "x": 9.399996757507325,
+                "y": 5.481129169464111,
+                "z": -4.400035381317139
+            },
+            "tileLocalEuler": {
+                "x": 16.449840545654298,
+                "y": 254.76580810546876,
+                "z": 359.9835510253906
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 4.802011566162889e-10,
+                "y": -1.0,
+                "z": 2.808560566336382e-7
+            },
+            "heightAboveFloor": -0.3958740234375,
+            "centerSightDistance": 5.685965538024902,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "ShelfB (6)",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 5.685965538024902,
+            "placementScore": 500.3335876464844
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:47.7679159Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "CloverTile(Clone)",
+            "tileBoundsSize": {
+                "x": 7.999444961547852,
+                "y": 8.040369987487793,
+                "z": 7.99955940246582
+            },
+            "tileDoorwayCount": 3,
+            "cameraIndex": 3,
+            "displayLabel": "CAM_03",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 3,
+            "tileLocalPosition": {
+                "x": 1.3999996185302735,
+                "y": 2.8000006675720217,
+                "z": 0.5900080800056458
+            },
+            "tileLocalEuler": {
+                "x": 52.79065704345703,
+                "y": 190.09475708007813,
+                "z": 192.6022186279297
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 4.5900115966796879,
+            "centerSightDistance": 6.403628826141357,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "DoorBlockerOffset3 (1)",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 6.403628826141357,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "BlockedView",
+            "reason": "penalize short center sight and blocked frustum",
+            "timestampUtc": "2026-06-04T16:25:54.8274060Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "KitchenTile(Clone)",
+            "tileBoundsSize": {
+                "x": 16.000930786132814,
+                "y": 6.61273193359375,
+                "z": 15.999444961547852
+            },
+            "tileDoorwayCount": 2,
+            "cameraIndex": 6,
+            "displayLabel": "CAM_06",
+            "mountMode": "Ceiling",
+            "placementSource": "strict",
+            "surfaceKind": "Ceiling",
+            "placementCornerId": 39,
+            "tileLocalPosition": {
+                "x": 3.600013494491577,
+                "y": 6.2284393310546879,
+                "z": -11.875509262084961
+            },
+            "tileLocalEuler": {
+                "x": 30.492446899414064,
+                "y": 264.93621826171877,
+                "z": 0.000001981612058443716
+            },
+            "tileLocalSurfaceNormal": {
+                "x": -5.959946847156061e-8,
+                "y": -1.0,
+                "z": 1.4901368672326499e-7
+            },
+            "heightAboveFloor": 6.21844482421875,
+            "centerSightDistance": 11.11059284210205,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 3,
+            "forwardHitName": "oven",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 11.11059284210205,
+            "placementScore": 503.54876708984377
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:25:58.1795467Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "ThinStairTile(Clone)",
+            "tileBoundsSize": {
+                "x": 16.0,
+                "y": 13.139222145080567,
+                "z": 8.071484565734864
+            },
+            "tileDoorwayCount": 2,
+            "cameraIndex": 8,
+            "displayLabel": "CAM_08",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 0,
+            "tileLocalPosition": {
+                "x": -1.4482364654541016,
+                "y": 9.60000228881836,
+                "z": 0.07845752686262131
+            },
+            "tileLocalEuler": {
+                "x": 84.02509307861328,
+                "y": 326.85394287109377,
+                "z": 326.7110595703125
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 4.078460693359375,
+            "centerSightDistance": 7.647517204284668,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "Cube",
+            "forwardHitLayer": 11,
+            "forwardHitDistance": 7.647517204284668,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:26:00.2593750Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "CloverTile(Clone)",
+            "tileBoundsSize": {
+                "x": 7.9999098777771,
+                "y": 8.039358139038086,
+                "z": 8.00011157989502
+            },
+            "tileDoorwayCount": 3,
+            "cameraIndex": 7,
+            "displayLabel": "CAM_07",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 3,
+            "tileLocalPosition": {
+                "x": 1.27651846408844,
+                "y": 2.8278796672821047,
+                "z": 0.17584528028964997
+            },
+            "tileLocalEuler": {
+                "x": 48.77980422973633,
+                "y": 232.78860473632813,
+                "z": 240.26626586914063
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 4.17584228515625,
+            "centerSightDistance": 7.005586624145508,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "mesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 7.005586624145508,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:26:01.8808059Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "CloverTile(Clone)",
+            "tileBoundsSize": {
+                "x": 7.999875545501709,
+                "y": 8.039393424987793,
+                "z": 8.000112533569336
+            },
+            "tileDoorwayCount": 3,
+            "cameraIndex": 1,
+            "displayLabel": "CAM_01",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 1,
+            "tileLocalPosition": {
+                "x": 1.399997591972351,
+                "y": 2.743011236190796,
+                "z": -2.003999710083008
+            },
+            "tileLocalEuler": {
+                "x": 18.761873245239259,
+                "y": 275.281494140625,
+                "z": 271.70294189453127
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 1.996002197265625,
+            "centerSightDistance": 5.621290683746338,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "mesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 5.621290683746338,
+            "placementScore": -100.0
+        },
+        {
+            "rating": "Perfect",
+            "reason": "replay this tile-local pose first",
+            "timestampUtc": "2026-06-04T16:26:07.8991806Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "GreenhouseTile(Clone)",
+            "tileBoundsSize": {
+                "x": 7.918123722076416,
+                "y": 6.74705171585083,
+                "z": 24.00031089782715
+            },
+            "tileDoorwayCount": 1,
+            "cameraIndex": 13,
+            "displayLabel": "CAM_13",
+            "mountMode": "Ceiling",
+            "placementSource": "support-retarget",
+            "surfaceKind": "Ceiling",
+            "placementCornerId": 19,
+            "tileLocalPosition": {
+                "x": 5.273565769195557,
+                "y": -0.48458486795425417,
+                "z": 5.408627033233643
+            },
+            "tileLocalEuler": {
+                "x": 26.042591094970704,
+                "y": 273.40460205078127,
+                "z": 359.9912414550781
+            },
+            "tileLocalSurfaceNormal": {
+                "x": -2.138403765172825e-8,
+                "y": -1.0,
+                "z": 1.7666361884494109e-7
+            },
+            "heightAboveFloor": 5.749420166015625,
+            "centerSightDistance": 13.086299896240235,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "DirtCollider (1)",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 13.086299896240235,
+            "placementScore": 505.00469970703127
+        },
+        {
+            "rating": "PoorCoverage",
+            "reason": "prefer wider doorway/room coverage",
+            "timestampUtc": "2026-06-04T16:26:11.6087639Z",
+            "flowName": "Level2Flow",
+            "dungeonName": "LevelGenerationRoot",
+            "dungeonFingerprint": "tiles47_doors94",
+            "tileName": "BedroomTileB(Clone)",
+            "tileBoundsSize": {
+                "x": 12.864364624023438,
+                "y": 5.374525547027588,
+                "z": 10.99885082244873
+            },
+            "tileDoorwayCount": 1,
+            "cameraIndex": 5,
+            "displayLabel": "CAM_05",
+            "mountMode": "Ceiling",
+            "placementSource": "legacy-fallback",
+            "surfaceKind": "aabb",
+            "placementCornerId": 1,
+            "tileLocalPosition": {
+                "x": 7.951461315155029,
+                "y": 6.934733867645264,
+                "z": -2.5758261680603029
+            },
+            "tileLocalEuler": {
+                "x": 58.898006439208987,
+                "y": 279.7264099121094,
+                "z": 278.3541259765625
+            },
+            "tileLocalSurfaceNormal": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+            },
+            "heightAboveFloor": 0.2476348876953125,
+            "centerSightDistance": 12.65371322631836,
+            "frustumHits": 9,
+            "frustumVoids": 0,
+            "frustumNearWall": 0,
+            "forwardHitName": "BedroomTileMesh",
+            "forwardHitLayer": 8,
+            "forwardHitDistance": 12.65371322631836,
+            "placementScore": -100.0
+        }
+    ]
+}
