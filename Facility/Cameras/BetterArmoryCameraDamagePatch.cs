@@ -5,6 +5,7 @@ using HarmonyLib;
 using Unity.Netcode;
 using UnityEngine;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 
 namespace Y4NGZCompany.Facility.Cameras
 {
@@ -47,8 +48,11 @@ namespace Y4NGZCompany.Facility.Cameras
             try
             {
                 Vector3 shotForward = __3;
-                NetworkManager network = NetworkManager.Singleton;
-                if (network != null && !network.IsServer)
+                // #716 G5: this used to read "network != null && !network.IsServer", so a null
+                // NetworkManager fell through as if this client were the server and applied
+                // camera damage it had no authority for. CctvNetworkRole answers false when it
+                // cannot show otherwise.
+                if (!CctvNetworkRole.IsServer())
                     return;
                 if (!(SurveillanceBootstrap.Config?.BreakableCameras?.Value ?? true))
                     return;

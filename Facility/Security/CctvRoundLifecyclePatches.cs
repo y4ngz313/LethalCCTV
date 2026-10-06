@@ -1,6 +1,7 @@
 using HarmonyLib;
 using Y4NGZCompany.Bootstrap;
 using Y4NGZCompany.Facility.Interior;
+using Y4NGZCompany.Facility.Stash;
 
 namespace Y4NGZCompany.Facility.Security
 {
@@ -82,8 +83,13 @@ namespace Y4NGZCompany.Facility.Security
         /// <summary>
         /// Same calls in the same order the contracts plugin used, so a behaviour question
         /// about reset ordering has one answer rather than two.
+        ///
+        /// #716 G4: internal so <c>CctvSupportApi.ResetRound</c> can delegate here. That API
+        /// used to reset four of the eight systems below, which meant an external caller
+        /// asking for a round reset silently kept the alarm system, alarm fixtures, mainframe
+        /// protocol state and interior support state from the previous round.
         /// </summary>
-        private static void ResetRound()
+        internal static void ResetRound()
         {
             try
             {
@@ -94,8 +100,29 @@ namespace Y4NGZCompany.Facility.Security
                 CctvCameraShutdownSync.ResetRound();
                 InteriorAlarmSpawner.ResetRound();
                 MainframeProtocolDirector.ResetRound();
+                // #716 G4: the keypad overlay is a static singleton holding a canvas parented to
+                // the local player plus the vault it was opened against, both of which belong to
+                // the round that just ended. It had no caller at all, so the stale instance and
+                // its canvas survived into the next round.
+                VaultKeypadOverlay.ResetInstance();
                 // Was the line immediately after this block in MoonContractState.ResetRunState.
                 InteriorSupportSpawner.ResetRunState();
+                // #1271: the host's queued camera reservations belong to the registry that
+                // reset just cleared, so they go with it; the next round starts uncommitted.
+                Y4NGZCompany.Facility.Cameras.CameraReservationQueue.ResetRound();
+                // #716 A6: the support-injection gate token. Only the CamerasReady follow-up
+                // coroutine ever raises it, so a placement pass that threw before raising
+                // CamerasReady - the spawner swallows that exception - or a follow-up stopped
+                // mid-window would leave it closed and make every later support-injection pass
+                // burn its full frame wait. The round boundary is the natural restore point:
+                // the next round's SurveillanceBootstrap.RunCamerasReadyFollowUps closes it and
+                // reopens it around the registry rebuild inside the dungeon-finished event.
+                SurveillanceBootstrap.SecurityRegistryReadyForRound = true;
+                // #1271: drop the per-dungeon placement caches with the round that owned them.
+                // Both caches also key themselves to the dungeon, so this only releases the
+                // references early; a missed reset cannot serve last round's values.
+                Y4NGZCompany.Facility.Cameras.DungeonCameraSpawner.ResetTileAabbCache();
+                Y4NGZCompany.Facility.Cameras.Placement.PlacementMask.ResetRoundCache();
             }
             catch (System.Exception ex)
             {

@@ -68,33 +68,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal void SelectCamera(int slot)
         {
-            if (_interactionsApiMode)
-            {
-                CCTVOperatorInteractionsBridge.TrySetInt(
-                    _interactionsApiHandle,
-                    Y4NGZPlayerAnimationBridge.ActiveSlotInt,
-                    Mathf.Clamp(slot, 0, 3));
-                CCTVOperatorInteractionsBridge.TrySetInt(
-                    _interactionsApiHandle,
-                    Y4NGZPlayerAnimationBridge.ActionButtonInt,
-                    1);
-                CCTVOperatorInteractionsBridge.TryFireTrigger(
-                    _interactionsApiHandle,
-                    Y4NGZPlayerAnimationBridge.SelectCameraTrigger);
-                CCTVOperatorInteractionsBridge.TryFireTrigger(
-                    _interactionsApiHandle,
-                    Y4NGZPlayerAnimationBridge.ButtonPressTrigger);
-                return;
-            }
-
-            SetInt(ActiveSlotHash, Mathf.Clamp(slot, 0, 3));
-            SetInt(ActionButtonHash, 1);
-            _buttonPressActionId = 1;
-            FireTrigger(SelectCameraHash);
-            FireTrigger(ButtonPressHash);
-            _buttonPressLayerUntil = Time.unscaledTime + ButtonPressLayerSeconds;
-            ApplyOperatorAnimatorOverrides();
-            _runtimePose?.PulseButtonPress();
+            SetActiveSlotQuiet(slot);
         }
 
         /// <summary>Slot sync without the button-press flourish (remote enter snapshot).</summary>
@@ -175,6 +149,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal void PressButton(int buttonId, bool isStandUp)
         {
+            if (!isStandUp)
+            {
+                _buttonPressActionId = buttonId;
+                _buttonPressLayerUntil = Time.unscaledTime + ButtonPressLayerSeconds;
+            }
             if (_interactionsApiMode)
             {
                 if (isStandUp)
@@ -183,6 +162,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     return;
                 }
 
+                SetLayerWeight(_buttonPressLayer, 1f);
                 CCTVOperatorInteractionsBridge.TrySetInt(
                     _interactionsApiHandle,
                     Y4NGZPlayerAnimationBridge.ActionButtonInt,

@@ -355,7 +355,7 @@ namespace Y4NGZCompany.Facility.Cameras
             {
                 _unknownLinearChainWarned = true;
                 SurveillanceBootstrap.Log.LogWarning(
-                    $"[LethalCCTV] CameraSelector: unknown 'Linear Chain Coverage' value '{raw}'. " +
+                    $"[LethalCCTV] CameraSelector: unknown 'Coverage Without Junctions' value '{raw}'. " +
                     $"Expected '{LinearChainEndpoints}' or '{LinearChainLargest}'. Falling back to '{LinearChainEndpoints}'.");
             }
             return LinearChainEndpoints;

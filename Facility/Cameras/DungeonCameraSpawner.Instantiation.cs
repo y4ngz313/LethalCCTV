@@ -32,66 +32,6 @@ namespace Y4NGZCompany.Facility.Cameras
             }
         }
 
-        private readonly struct LegacyFallbackPose
-        {
-            public readonly Vector3 WorldPos;
-            public readonly Quaternion WorldRot;
-            public readonly int CornerId;
-            public readonly Vector3 CornerLocal;
-            public readonly CameraMountMode MountMode;
-            public readonly float DrivingRoomHeightM;
-            public readonly SurfaceMount.SafetyGateResult Gate;
-
-            public LegacyFallbackPose(
-                Vector3 worldPos, Quaternion worldRot, int cornerId, Vector3 cornerLocal,
-                CameraMountMode mountMode, float drivingRoomHeightM,
-                SurfaceMount.SafetyGateResult gate)
-            {
-                WorldPos = worldPos;
-                WorldRot = worldRot;
-                CornerId = cornerId;
-                CornerLocal = cornerLocal;
-                MountMode = mountMode;
-                DrivingRoomHeightM = drivingRoomHeightM;
-                Gate = gate;
-            }
-        }
-
-        private static bool TryComputeSafeLegacyFallback(
-            Tile tile,
-            Bounds box,
-            int sortedIndex,
-            in PlacementParams placementParams,
-            in PlacementMasks placementMasks,
-            bool debug,
-            out LegacyFallbackPose fallback)
-        {
-            fallback = default;
-            if (tile == null || box.size.sqrMagnitude < 1e-6f) return false;
-
-            for (int cornerVariantOffset = 0; cornerVariantOffset < 4; cornerVariantOffset++)
-            {
-                (Vector3 worldPos, Quaternion worldRot, int cornerId, Vector3 cornerLocal,
-                 CameraMountMode mountMode, float drivingRoomHeightM) =
-                    TilePlacement.ComputeP2(
-                        tile, box, sortedIndex, in placementParams, cornerVariantOffset);
-
-                if (!SurfaceMount.TryValidateLegacyFallbackPose(
-                        tile, box, sortedIndex, in placementMasks,
-                        worldPos, worldRot, mountMode, cornerId, debug,
-                        out SurfaceMount.SafetyGateResult gate))
-                {
-                    continue;
-                }
-
-                fallback = new LegacyFallbackPose(
-                    worldPos, worldRot, cornerId, cornerLocal,
-                    mountMode, drivingRoomHeightM, gate);
-                return true;
-            }
-
-            return false;
-        }
         private static bool IsRedundant(
             SurfaceMount.Candidate c, List<AcceptedPose> kept, CameraPick pick, out string reason)
         {
@@ -123,30 +63,6 @@ namespace Y4NGZCompany.Facility.Cameras
             return false;
         }
 
-        // Spacing-floor check for the legacy fallback pose, which never goes
-        // through candidate ranking (and therefore never through IsRedundant).
-        // Same rule as IsRedundant's min-separation clause.
-        private static bool IsFallbackTooClose(
-            Vector3 pos, List<AcceptedPose> kept, CameraPick pick, out string reason)
-        {
-            reason = null;
-            for (int i = 0; i < kept.Count; i++)
-            {
-                AcceptedPose k = kept[i];
-                float d = Vector3.Distance(pos, k.Pos);
-                if (d >= MinCameraSeparationM) continue;
-                if (Mathf.Abs(pos.y - k.Pos.y) >= RedundancySameFloorYM) continue;
-                bool sameRoom = ReferenceEquals(pick.Tile, k.Tile)
-                    || (pick.Component != null && ReferenceEquals(pick.Component, k.Comp));
-                if (sameRoom || d < RedundancyCloseAnywayM)
-                {
-                    reason = $"vs cam@({k.Pos.x:F1},{k.Pos.y:F1},{k.Pos.z:F1}) d={d:F2} sameRoom={sameRoom}";
-                    return true;
-                }
-            }
-            return false;
-        }
-
         // Tile-local fallback box for degenerate-mesh tiles: the DunGen
         // tile-local LocalBounds. Colliders still exist on such tiles even
         // when no encapsulable MeshFilter does, so a surface probe over this
@@ -158,41 +74,33 @@ namespace Y4NGZCompany.Facility.Cameras
         }
 
         // Pose-instantiation funnel. It does not choose where the camera goes; on the
-        // server it first reserves the selected pose so a delayed camera pass cannot
-        // overlap another facility consumer. All placement sources share component setup,
+        // server it claims the selected pose for later facility consumers through
+        // CameraReservationQueue, which holds the claim until the host support pass settles.
+        // Reservation conflicts never change the peer-local camera list.
+        // All placement sources share safety validation, component setup,
         // field stash, disable-config, and mouselook baseline capture here.
         private CCTVCamera InstantiateAtPose(
             Tile tile, int cameraIndex, Vector3 worldPos, Quaternion worldRot,
             int cornerId, Vector3 cornerLocal, CameraMountMode mountMode,
-            float drivingRoomHeightM)
+            float drivingRoomHeightM, string source = "procedural")
         {
-            FixtureReservationHandle cameraReservation = default;
-            if (RoundManager.Instance != null && RoundManager.Instance.IsServer)
+            // ApplyOffsets reconstructs a level yaw/pitch rotation. Validate and
+            // spawn exactly that rotation, including saved poses with authored roll.
+            worldRot = CameraPlacementSafety.LevelRotation(worldRot);
+            CameraPanEnvelope safetyEnvelope = null;
+            if (!CameraPlacementSafety.TryEnvelope(tile, worldPos, worldRot,
+                out safetyEnvelope, out string safetyReason))
             {
-                var cameraFootprint = new FixtureFootprint(
-                    Vector3.forward,
-                    Vector3.back,
-                    Vector3.up,
-                    new Vector3(0.70f, 0.55f, 0.75f),
-                    0f,
-                    -0.275f,
-                    0.35f,
-                    0.20f);
-                if (!FixtureReservationRegistry.TryReserve(
-                        $"CCTV camera {cameraIndex}",
-                        "cctv-camera-pipeline",
-                        cameraFootprint,
-                        worldPos,
-                        worldRot,
-                        out cameraReservation,
-                        out FixtureReservationConflict conflict))
-                {
-                    SurveillanceBootstrap.Log.LogWarning(
-                        $"[LethalCCTV] Camera rejected before construction because its reservation overlaps " +
-                        $"an existing fixture. cam={cameraIndex} {conflict.ToDiagnosticString()}.");
-                    return null;
-                }
+                SurveillanceBootstrap.Log?.LogMessage(
+                    $"[LethalCCTV][PlacementSafety] reject cam={cameraIndex} tile='{tile?.name}' " +
+                    $"source={source} corner={cornerId} seed={StartOfRound.Instance?.randomMapSeed} " +
+                    $"lens={worldPos:F3} euler={worldRot.eulerAngles:F2} reason={safetyReason} " +
+                    CameraPlacementSafety.DescribeFloor(tile));
+                return null;
             }
+            CameraReservationQueue.Claim cameraReservation = null;
+            if (RoundManager.Instance != null && RoundManager.Instance.IsServer)
+                cameraReservation = CameraReservationQueue.Reserve(cameraIndex, worldPos, worldRot);
 
             string ownerName = tile != null ? tile.name : "Exterior";
             GameObject go = null;
@@ -220,6 +128,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 holder.CameraIndex = cameraIndex;
                 holder.DisplayLabel = "CAM_" + cameraIndex.ToString("D2");
                 holder.OwningTile = tile;
+                holder.SafetyEnvelope = safetyEnvelope;
                 holder.Cam = cam;
                 holder.HdrpData = null;
                 holder.PlacementCornerLocal = cornerLocal;
@@ -240,8 +149,7 @@ namespace Y4NGZCompany.Facility.Cameras
             }
             catch (Exception exception)
             {
-                if (cameraReservation.IsValid)
-                    FixtureReservationRegistry.Release(cameraReservation);
+                CameraReservationQueue.Release(cameraReservation);
                 if (go != null)
                     UnityEngine.Object.Destroy(go);
 

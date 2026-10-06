@@ -6,6 +6,6 @@ namespace Y4NGZCompany.Bootstrap
     {
         public const string PLUGIN_GUID = "com.y4ngz.company.lethalcctv";
         public const string PLUGIN_NAME = "Y4NGZ CCTV";
-        public const string PLUGIN_VERSION = "1.1.0";
+        public const string PLUGIN_VERSION = "1.2.0";
     }
 }

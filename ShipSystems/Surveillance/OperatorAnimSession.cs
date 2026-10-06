@@ -21,7 +21,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     internal sealed partial class OperatorAnimSession
     {
         private const float JoystickIdleAfterSeconds = 0.16f;
-        private const float ButtonPressLayerSeconds = 1.15f;
+        private const float ButtonPressLayerSeconds = 1.0f;
         private const int DeferredVanillaRigRebuildFrames = 3;
         // Exit is two-phase: first ease any joystick deflection back to neutral,
         // then play the authored hand-release clip before restoring vanilla.
@@ -262,6 +262,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private bool _interactionsApiUsesDedicatedViewmodel;
         private object _interactionsApiHandle;
         private float _interactionsApiStartedAt;
+        private float _apiSavedAnimatorSpeed = 1f;
+        private float _apiEnterEvaluatedClipSeconds;
+        private bool _apiEnterPressRotationResolved;
+        private Quaternion _apiEnterPressRotationInStation;
+        private Transform _apiEnterIndexTip;
+        private bool _apiEnterSpeedOwned;
+        private float _apiTrajectoryFrame;
         private float _interactionsApiExitStartedAt;
         private bool _interactionsApiFeedFlipFired;
         private SavedAnimatorParameter[] _savedParameters = Array.Empty<SavedAnimatorParameter>();
@@ -279,33 +286,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private float _apiLeverControlReachAssistSmoothed;
         private Vector3 _apiLeverControlReachAssistLastDirection = Vector3.zero;
         private bool _apiLeverControlReachAssistLogged;
-        // Press-contact snap (Test 33): the authored enter table presses at
-        // station (0.42, 1.25, 1.045) but the live resolved button cap sat
-        // ~0.09m away, so the fingertip hovered above it. During the press
-        // window the authored left-hand position is blended by the world
-        // delta to the LIVE ResolveAccessButtonPressPoint. Frames are the
-        // 1-based 30fps indices from TryResolveApiLeftAuthoredStationPose:
-        // fingertip on the cap frames 8-16, deepest press at frame 16.
-        private const int ApiEnterPressContactRowIndex = 15;
+        // One live-geometry press: approach, frame-11 contact, release. The
+        // fallback is used only when a replacement player rig omits the index tip.
         private const float ApiEnterPressContactFrameStart = 8f;
-        private const float ApiEnterPressContactFrameEnd = 16f;
+        private const float ApiEnterPressContactFrameEnd = 12f;
         private const float ApiEnterPressContactRampFrames = 3f;
-        // Test 40: the Test-39 FromToRotation re-aim made contact but
-        // REPLACED the designed pointer-finger press pose with a solved
-        // orientation — on video the hand/arm visibly twisted around to
-        // reach the cap (user-rejected). The AUTHORED rotation is law now:
-        // the designed animation plays untouched, and contact is achieved
-        // purely positionally by aiming the WRIST at
-        // liveButton - R_authored * localTipOffset so the index tip (where
-        // it actually sits under the authored quat) lands on the cap. The
-        // arm may approach from a different angle than authored — accepted.
-        // Offset = finger2.L.001_end hand-local under the press quat,
-        // measured post-solve at frame 15 (Test 39, enter #1).
         private static readonly Vector3 ApiEnterPressLocalIndexTipOffset =
             new Vector3(-0.045f, 0.178f, -0.076f);
-        // The deepest authored press row (1-based frame 16); the one-shot
-        // telemetry samples here so it reads the actual press, not mid-rise.
-        private const int ApiEnterPressTelemetryFrame = 15;
+        private const int ApiEnterPressTelemetryFrame = 11;
         // Lever-contact snap (Test 38): the authored enter table ends the
         // sweep at station (0.59,1.37,0.545), but the LIVE lever grip
         // resolved ~0.23m below/behind that (world 9.88,1.90 vs grip
@@ -325,7 +313,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // geometry in hand-local orientation space, then aim the wrist so
         // that anatomical point lands on top of the live grip. The fallback
         // matches the roughly 8 cm wrist-to-palm span of the FP rig.
-        private const float ApiLeverGripPalmOffsetMeters = 0.025f;
+        private const float ApiLeverGripPalmOffsetMeters = 0.023f;
         private const float ApiLeverPalmKnuckleFraction = 0.58f;
         private static readonly Vector3 ApiLeverFallbackLocalPalmOffset =
             new Vector3(0f, 0.08f, 0f);
@@ -437,12 +425,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private Vector3 _savedFirstPersonArmsRootLocalPosition;
         private Quaternion _savedFirstPersonArmsRootLocalRotation = Quaternion.identity;
         private bool _firstPersonArmsRootPoseCaptured;
-        private Transform _apiArmsRootStationPinRoot;
         private Transform _apiArmsRootStationPinLeftTarget;
-        private Transform _apiArmsRootStationPinLeftParent;
         private Transform _apiArmsRootStationPinRightTarget;
         private bool _apiArmsRootStationPinActive;
-        private float _apiArmsRootStationPinNextTelemetryAt;
         private string _apiArmsRootStationPinUnavailableReason;
         private Renderer _firstPersonArmsRenderer;
         private bool _firstPersonArmsHiddenForMissingAnchor;
@@ -507,6 +492,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         {
             internal readonly Vector3 Position;
             internal readonly Quaternion Rotation;
+
+            internal AuthoredLeftHandStationPose(Vector3 position, Quaternion rotation)
+            {
+                Position = position;
+                Rotation = rotation;
+            }
 
             internal AuthoredLeftHandStationPose(
                 float positionX,

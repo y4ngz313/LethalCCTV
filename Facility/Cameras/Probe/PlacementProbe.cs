@@ -59,12 +59,9 @@ namespace Y4NGZCompany.Facility.Cameras.Probe
         // read away.
         private const float MULTI_STOREY_THRESHOLD_M = 1.0f;
 
-        // Ceil-tier downward pitch, matched to ComputeP2's fixed
-        // CeilingMountPitchDownDegrees. Kept here as a constant so the
-        // probe does not couple to the placement module's private const,
-        // but they must move together — if ComputeP2's pitch changes,
-        // this value must change too (probe loses correspondence with
-        // the placement it predicts otherwise).
+        // Ceil-tier downward pitch, matched to the fixed 15° ceiling pitch
+        // of the Phase 1.9 corner placement (removed in #1313). Kept so the
+        // probe's candidate set stays comparable with earlier probe logs.
         private const float CEIL_PITCH_DOWN_DEG = 15.0f;
 
         internal static void Run(
@@ -211,7 +208,7 @@ namespace Y4NGZCompany.Facility.Cameras.Probe
                 for (int tier = 0; tier < 2; tier++)
                 {
                     string tierName = tier == 0 ? "ceil" : "wall";
-                    // Ceil tier: anchor near AABB top per current ComputeP2
+                    // Ceil tier: anchor near AABB top per the Phase 1.9 corner placement
                     //   localY = min.y + HeightFraction * size.y.
                     // Wall tier: anchor at the P2.0-corrected entry floor
                     //   localY = dFloorY + WallMountHeightM (NOT min.y +
@@ -238,11 +235,11 @@ namespace Y4NGZCompany.Facility.Cameras.Probe
                         Vector3 dirCentroid = FlattenXZ(toCenter);
 
                         // Aim formulation per tier.
-                        // Ceil tier matches ComputeP2's ceiling math: yaw
-                        // toward centroid, fixed 15° pitch down. We project
-                        // the ray that far along the floor with a 15° drop
-                        // toward the AABB diagonal range (clamped).
-                        // Wall tier matches ComputeP2's wall math: aim at
+                        // Ceil tier matches the Phase 1.9 corner placement's
+                        // ceiling math: yaw toward centroid, fixed 15° pitch
+                        // down. We project the ray that far along the floor
+                        // with a 15° drop toward the AABB diagonal range
+                        // (clamped). Wall tier matches its wall math: aim at
                         // (centroid.x, anchor.y, centroid.z) — same Y by
                         // construction, pitch is 0.
                         Vector3 aimTargetLocal;

@@ -20,15 +20,14 @@ namespace Y4NGZCompany.Bootstrap
     /// </summary>
     internal static class CctvModuleConfig
     {
-        internal const string SecuritySharedSection = "CCTV Security";
-        internal const string SecurityAlarmsSection = "Wall Alarms";
-        internal const string SecurityProtocolsSection = "Security Protocols";
-        internal const string StashLootSection = "Company Stashes";
-        internal const string InteriorSupportSection = "Interior Support";
+        internal const string SecuritySystemsSection = "Security Systems";
+        internal const string MainframeSection = "Mainframe";
+        internal const string CompanyStashesSection = "Company Stashes";
 
         internal static ManualLogSource Log;
 
-        internal static ConfigEntry<bool> InteriorSupportAutoSpawnEnabled;
+        internal static ConfigEntry<bool> MainframeEnabled;
+        internal static ConfigEntry<bool> CompanyStashesEnabled;
         internal static ConfigEntry<int> StashLootRolls;
         internal static ConfigEntry<string> StashLootPool;
         internal static ConfigEntry<int> StashMinimumRiskD;
@@ -91,20 +90,26 @@ namespace Y4NGZCompany.Bootstrap
                 return;
             _bound = true;
 
-            InteriorSupportAutoSpawnEnabled = config.Bind(
-                InteriorSupportSection,
-                "AutoSpawnFixtures",
+            MainframeEnabled = config.Bind(
+                MainframeSection,
+                "Enabled",
                 true,
-                "When true, the server spawns alarm box, mainframe, and mini-vaults into the deepest interior rooms of every moon.");
+                "Places the security mainframe in the facility, which players can hack to shut security down. On by default; when off there is no mainframe, cameras and alarms still work, and the only way to stop a camera is to break it. Host decides.");
+
+            CompanyStashesEnabled = config.Bind(
+                CompanyStashesSection,
+                "Enabled",
+                true,
+                "Places code-locked Company Stashes full of loot in the facility. On by default. Host decides.");
 
             StashLootRolls = config.Bind(
-                StashLootSection,
+                CompanyStashesSection,
                 "Loot Rolls",
                 2,
-                "Number of weighted stash-loot rolls after the guaranteed Company Stash Gold bar spawns. Set to 0 to keep only the Gold bar.");
+                "How many extra items each Company Stash draws from Loot Pool on top of its guaranteed gold bar. At the default of 2 every stash holds the gold bar plus two draws; 0 leaves only the gold bar. Host decides.");
 
             StashLootPool = config.Bind(
-                StashLootSection,
+                CompanyStashesSection,
                 "Loot Pool",
                 // Refreshed 2026-08-06 (Y4NGZUpgrades release prep). The previous default still named
                 // ".357 Rounds" and "Crossbow Bolt", two display names Y4NGZUpgrades retired in #148
@@ -113,307 +118,307 @@ namespace Y4NGZCompany.Bootstrap
                 // Item.itemName at round time; a missing item is logged and skipped, so the stash
                 // still works with Y4NGZUpgrades absent.
                 DefaultStashLootPool,
-                "Weighted Company Stash loot. Any network-spawnable grabbable item can be used, including ammo from companion mods. Format: name|rarity|count; entries are separated by semicolons. Higher rarity values make an entry more likely. Missing items are ignored before rolls are made.");
+                "Items a Company Stash can draw for Loot Rolls, as entries split by semicolons, each written Name|weight|count: the item's in-game name, how likely it is next to the other entries (bigger is more likely), and how many copies one draw gives. Items that are not in the game are skipped, so items from other mods are safe to list; the default makes ammo and fuel common finds and the three guns rare ones. Host decides.");
 
-            StashMinimumRiskD = BindStashCount(config, "Minimum Stashes - Risk D", 1);
-            StashMaximumRiskD = BindStashCount(config, "Maximum Stashes - Risk D", 4);
-            StashMinimumRiskC = BindStashCount(config, "Minimum Stashes - Risk C", 1);
-            StashMaximumRiskC = BindStashCount(config, "Maximum Stashes - Risk C", 4);
-            StashMinimumRiskB = BindStashCount(config, "Minimum Stashes - Risk B", 1);
-            StashMaximumRiskB = BindStashCount(config, "Maximum Stashes - Risk B", 4);
-            StashMinimumRiskA = BindStashCount(config, "Minimum Stashes - Risk A", 1);
-            StashMaximumRiskA = BindStashCount(config, "Maximum Stashes - Risk A", 4);
-            StashMinimumRiskS = BindStashCount(config, "Minimum Stashes - Risk S", 1);
-            StashMaximumRiskS = BindStashCount(config, "Maximum Stashes - Risk S", 4);
-            StashMinimumUnknownRisk = BindStashCount(config, "Minimum Stashes - Unknown Risk", 1);
-            StashMaximumUnknownRisk = BindStashCount(config, "Maximum Stashes - Unknown Risk", 4);
+            StashMinimumRiskD = BindStashCount(config, "Minimum Stashes - Risk D", 1, true, "moons rated D", "Maximum Stashes - Risk D");
+            StashMaximumRiskD = BindStashCount(config, "Maximum Stashes - Risk D", 4, false, "moons rated D", "Minimum Stashes - Risk D");
+            StashMinimumRiskC = BindStashCount(config, "Minimum Stashes - Risk C", 1, true, "moons rated C", "Maximum Stashes - Risk C");
+            StashMaximumRiskC = BindStashCount(config, "Maximum Stashes - Risk C", 4, false, "moons rated C", "Minimum Stashes - Risk C");
+            StashMinimumRiskB = BindStashCount(config, "Minimum Stashes - Risk B", 1, true, "moons rated B", "Maximum Stashes - Risk B");
+            StashMaximumRiskB = BindStashCount(config, "Maximum Stashes - Risk B", 4, false, "moons rated B", "Minimum Stashes - Risk B");
+            StashMinimumRiskA = BindStashCount(config, "Minimum Stashes - Risk A", 1, true, "moons rated A", "Maximum Stashes - Risk A");
+            StashMaximumRiskA = BindStashCount(config, "Maximum Stashes - Risk A", 4, false, "moons rated A", "Minimum Stashes - Risk A");
+            StashMinimumRiskS = BindStashCount(config, "Minimum Stashes - Risk S", 1, true, "moons rated S", "Maximum Stashes - Risk S");
+            StashMaximumRiskS = BindStashCount(config, "Maximum Stashes - Risk S", 4, false, "moons rated S", "Minimum Stashes - Risk S");
+            StashMinimumUnknownRisk = BindStashCount(config, "Minimum Stashes - Unknown Risk", 1, true, "moons whose risk level is not recognised", "Maximum Stashes - Unknown Risk");
+            StashMaximumUnknownRisk = BindStashCount(config, "Maximum Stashes - Unknown Risk", 4, false, "moons whose risk level is not recognised", "Minimum Stashes - Unknown Risk");
 
             CctvSecurityEnabled = config.Bind(
-                SecuritySharedSection,
-                "Enabled",
+                SecuritySystemsSection,
+                "Security Enabled",
                 true,
-                "When true, the interior mainframe controls rotating CCTV security cameras, wall alarms, and protocol events.");
+                "Master switch for camera security: watching cameras, alarms, lockdown gates and drills. On by default; each moon also needs its matching Security Enabled - Risk D, C, B, A or S switch on, except moons whose risk level is not recognised, where only this switch counts. Host decides.");
 
-            // #466 per-risk-level security block. The master Enabled above still gates
+            // #466 per-risk-level security block. The master Security Enabled above still gates
             // everything; these decide whether a landed moon's tier runs hostile security
             // at all. #575: D and C now default on - play testing landed on hostile
             // security running at every risk tier, so a fresh install matches the tuned
             // profile instead of drifting from it.
             CctvSecurityEnabledRiskD = config.Bind(
-                SecuritySharedSection,
-                "EnabledRiskD",
+                SecuritySystemsSection,
+                "Security Enabled - Risk D",
                 true,
-                "When true, hostile CCTV security (active cameras, detection, alarms) runs on D-risk moons.");
+                "Turns camera security (watching cameras, alarms and lockdowns) on for moons rated D. On by default; it only matters while Security Enabled is on. Host decides.");
 
             CctvSecurityEnabledRiskC = config.Bind(
-                SecuritySharedSection,
-                "EnabledRiskC",
+                SecuritySystemsSection,
+                "Security Enabled - Risk C",
                 true,
-                "When true, hostile CCTV security (active cameras, detection, alarms) runs on C-risk moons.");
+                "Turns camera security (watching cameras, alarms and lockdowns) on for moons rated C. On by default; it only matters while Security Enabled is on. Host decides.");
 
             CctvSecurityEnabledRiskB = config.Bind(
-                SecuritySharedSection,
-                "EnabledRiskB",
+                SecuritySystemsSection,
+                "Security Enabled - Risk B",
                 true,
-                "When true, hostile CCTV security (active cameras, detection, alarms) runs on B-risk moons.");
+                "Turns camera security (watching cameras, alarms and lockdowns) on for moons rated B. On by default; it only matters while Security Enabled is on. Host decides.");
 
             CctvSecurityEnabledRiskA = config.Bind(
-                SecuritySharedSection,
-                "EnabledRiskA",
+                SecuritySystemsSection,
+                "Security Enabled - Risk A",
                 true,
-                "When true, hostile CCTV security (active cameras, detection, alarms) runs on A-risk moons.");
+                "Turns camera security (watching cameras, alarms and lockdowns) on for moons rated A. On by default; it only matters while Security Enabled is on. Host decides.");
 
             CctvSecurityEnabledRiskS = config.Bind(
-                SecuritySharedSection,
-                "EnabledRiskS",
+                SecuritySystemsSection,
+                "Security Enabled - Risk S",
                 true,
-                "When true, hostile CCTV security (active cameras, detection, alarms) runs on S-risk moons.");
+                "Turns camera security (watching cameras, alarms and lockdowns) on for moons rated S. On by default; it only matters while Security Enabled is on. Host decides.");
 
             CctvSecurityActiveCameraRatio = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraRatio",
+                SecuritySystemsSection,
+                "Active Camera Share - Unknown Risk",
                 0.20f,
                 new ConfigDescription(
-                    "Fallback fraction of unbroken eligible cameras that are security-active when the moon has no recognized C/B/A/S risk tier.",
+                    "Share of the working security cameras that actively watch for players on moons whose risk level is not recognised, rounded up and kept between Minimum Active Cameras and Maximum Active Cameras - Unknown Risk. At the default of 0.20 about one camera in five is watching. Host decides.",
                     new AcceptableValueRange<float>(0.05f, 1f)));
 
             CctvSecurityActiveCameraRatioRiskD = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraRatioRiskD",
+                SecuritySystemsSection,
+                "Active Camera Share - Risk D",
                 0.10f,
                 new ConfigDescription(
-                    "Fraction of unbroken eligible cameras active on D-risk moons. Only reached when EnabledRiskD is turned on.",
+                    "Share of the working security cameras that actively watch for players on moons rated D, rounded up and never below Minimum Active Cameras. At the default of 0.10 about one camera in ten is watching; 0 means no camera watches on these moons. Host decides.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityActiveCameraRatioRiskC = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraRatioRiskC",
+                SecuritySystemsSection,
+                "Active Camera Share - Risk C",
                 0.15f,
                 new ConfigDescription(
-                    "Fraction of unbroken eligible cameras active on C-risk moons.",
+                    "Share of the working security cameras that actively watch for players on moons rated C, rounded up and never below Minimum Active Cameras. At the default of 0.15 about three cameras in twenty are watching; 0 means no camera watches on these moons. Host decides.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityActiveCameraRatioRiskB = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraRatioRiskB",
+                SecuritySystemsSection,
+                "Active Camera Share - Risk B",
                 0.25f,
                 new ConfigDescription(
-                    "Fraction of unbroken eligible cameras active on B-risk moons.",
+                    "Share of the working security cameras that actively watch for players on moons rated B, rounded up and never below Minimum Active Cameras. At the default of 0.25 about one camera in four is watching; 0 means no camera watches on these moons. Host decides.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityActiveCameraRatioRiskA = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraRatioRiskA",
+                SecuritySystemsSection,
+                "Active Camera Share - Risk A",
                 0.25f,
                 new ConfigDescription(
-                    "Fraction of unbroken eligible cameras active on A-risk moons.",
+                    "Share of the working security cameras that actively watch for players on moons rated A, rounded up and never below Minimum Active Cameras. At the default of 0.25 about one camera in four is watching; 0 means no camera watches on these moons. Host decides.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityActiveCameraRatioRiskS = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraRatioRiskS",
+                SecuritySystemsSection,
+                "Active Camera Share - Risk S",
                 0.35f,
                 new ConfigDescription(
-                    "Fraction of unbroken eligible cameras active on S-risk moons.",
+                    "Share of the working security cameras that actively watch for players on moons rated S, rounded up and never below Minimum Active Cameras. At the default of 0.35 about one camera in three is watching; 0 means no camera watches on these moons. Host decides.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityActiveCameraMin = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraMin",
+                SecuritySystemsSection,
+                "Minimum Active Cameras",
                 1,
                 new ConfigDescription(
-                    "Minimum number of security-active cameras when any eligible camera exists.",
+                    "The fewest cameras that actively watch for players at once, on every moon, as long as there are that many working cameras. At the default of 1 at least one camera is always watching, unless that moon's Active Camera Share is 0. Host decides.",
                     new AcceptableValueRange<int>(0, 12)));
 
             CctvSecurityActiveCameraMax = config.Bind(
-                SecuritySharedSection,
-                "ActiveCameraMax",
+                SecuritySystemsSection,
+                "Maximum Active Cameras - Unknown Risk",
                 4,
                 new ConfigDescription(
-                    "Fallback maximum number of security-active cameras when the moon has no recognized C/B/A/S risk tier.",
+                    "The most cameras that actively watch for players at once on moons whose risk level is not recognised; on rated moons the Active Camera Share alone sets the number. At the default of 4 no more than four cameras watch at once there. Host decides.",
                     new AcceptableValueRange<int>(1, 24)));
 
             CctvSecurityRotationSeconds = config.Bind(
-                SecuritySharedSection,
-                "RotationSeconds",
+                SecuritySystemsSection,
+                "Active Camera Rotation Seconds",
                 90f,
                 new ConfigDescription(
-                    "Seconds between rotating the normal security-active camera set.",
+                    "How often, in seconds, a new set of cameras takes over watching for players. At the default of 90 the watching cameras change every minute and a half. Host decides.",
                     new AcceptableValueRange<float>(5f, 300f)));
 
             CctvSecurityDetectionSeconds = config.Bind(
-                SecuritySharedSection,
-                "DetectionSeconds",
+                SecuritySystemsSection,
+                "Detection Seconds - Unknown Risk",
                 1.5f,
                 new ConfigDescription(
-                    "Continuous seconds a player must stay visible to a security-active camera before alarm triggers. Used when the moon has no recognized D/C/B/A/S risk tier; otherwise the per-tier value below applies. A global +25% slowdown is applied on top of whichever value is in force.",
+                    "How long a watching camera must see a player without a break before it raises the alarm, on moons whose risk level is not recognised; the mod adds a quarter on top, so the default of 1.5 takes about 1.9 seconds. The five Detection Seconds - Risk settings start at this value when the file is first created. Host decides.",
                     new AcceptableValueRange<float>(0.25f, 5f)));
 
-            // #466. Each tier's default is the flat DetectionSeconds *as it currently
-            // stands in this profile*, not the shipped 1.5 - the flat key is bound above,
+            // #466. Each tier's default is the Detection Seconds - Unknown Risk key *as it
+            // currently stands in this profile*, not the shipped 1.5 - that key is bound above,
             // so a player who already dialled it in has that value adopted by all five
             // tiers on the first run that writes them, and an untouched config keeps the
             // shipped behaviour. Either way the only change to time-to-trip is the global
             // +25% slowdown CctvSecurityConfig applies afterwards.
             float detectionSecondsDefault = CctvSecurityDetectionSeconds.Value;
             CctvSecurityDetectionSecondsRiskD = config.Bind(
-                SecuritySharedSection,
-                "DetectionSecondsRiskD",
+                SecuritySystemsSection,
+                "Detection Seconds - Risk D",
                 detectionSecondsDefault,
                 new ConfigDescription(
-                    "Continuous seconds a player must stay visible to a security-active camera on D-risk moons.",
+                    "How long a watching camera must see a player without a break before it raises the alarm on moons rated D; the mod adds a quarter on top. It starts at the same value as Detection Seconds - Unknown Risk, 1.5 seconds on a new file. Host decides.",
                     new AcceptableValueRange<float>(0.25f, 15f)));
 
             CctvSecurityDetectionSecondsRiskC = config.Bind(
-                SecuritySharedSection,
-                "DetectionSecondsRiskC",
+                SecuritySystemsSection,
+                "Detection Seconds - Risk C",
                 detectionSecondsDefault,
                 new ConfigDescription(
-                    "Continuous seconds a player must stay visible to a security-active camera on C-risk moons.",
+                    "How long a watching camera must see a player without a break before it raises the alarm on moons rated C; the mod adds a quarter on top. It starts at the same value as Detection Seconds - Unknown Risk, 1.5 seconds on a new file. Host decides.",
                     new AcceptableValueRange<float>(0.25f, 15f)));
 
             CctvSecurityDetectionSecondsRiskB = config.Bind(
-                SecuritySharedSection,
-                "DetectionSecondsRiskB",
+                SecuritySystemsSection,
+                "Detection Seconds - Risk B",
                 detectionSecondsDefault,
                 new ConfigDescription(
-                    "Continuous seconds a player must stay visible to a security-active camera on B-risk moons.",
+                    "How long a watching camera must see a player without a break before it raises the alarm on moons rated B; the mod adds a quarter on top. It starts at the same value as Detection Seconds - Unknown Risk, 1.5 seconds on a new file. Host decides.",
                     new AcceptableValueRange<float>(0.25f, 15f)));
 
             CctvSecurityDetectionSecondsRiskA = config.Bind(
-                SecuritySharedSection,
-                "DetectionSecondsRiskA",
+                SecuritySystemsSection,
+                "Detection Seconds - Risk A",
                 detectionSecondsDefault,
                 new ConfigDescription(
-                    "Continuous seconds a player must stay visible to a security-active camera on A-risk moons.",
+                    "How long a watching camera must see a player without a break before it raises the alarm on moons rated A; the mod adds a quarter on top. It starts at the same value as Detection Seconds - Unknown Risk, 1.5 seconds on a new file. Host decides.",
                     new AcceptableValueRange<float>(0.25f, 15f)));
 
             CctvSecurityDetectionSecondsRiskS = config.Bind(
-                SecuritySharedSection,
-                "DetectionSecondsRiskS",
+                SecuritySystemsSection,
+                "Detection Seconds - Risk S",
                 detectionSecondsDefault,
                 new ConfigDescription(
-                    "Continuous seconds a player must stay visible to a security-active camera on S-risk moons.",
+                    "How long a watching camera must see a player without a break before it raises the alarm on moons rated S; the mod adds a quarter on top. It starts at the same value as Detection Seconds - Unknown Risk, 1.5 seconds on a new file. Host decides.",
                     new AcceptableValueRange<float>(0.25f, 15f)));
 
             CctvSecuritySpottingAlertEnabled = config.Bind(
-                SecuritySharedSection,
-                "SpottingAlertEnabled",
+                SecuritySystemsSection,
+                "Spotting Alert Enabled",
                 true,
-                "When true, a screen-edge arc points toward each security camera currently detecting you. Per-client visual.");
+                "Shows an arc at the edge of your screen pointing toward each security camera that is currently spotting you. On by default. Your own setting.");
 
             CctvSecuritySpottingAlertIntensity = config.Bind(
-                SecuritySharedSection,
-                "SpottingAlertIntensity",
+                SecuritySystemsSection,
+                "Spotting Alert Intensity",
                 1f,
                 new ConfigDescription(
-                    "Opacity multiplier for the spotting alert arcs; 0 hides them. Requires SpottingAlertEnabled. Per-client visual.",
+                    "How strongly the spotting alert arcs show, where 0 hides them and 2 is twice as strong. At the default of 1 they show at normal strength; it only matters while Spotting Alert Enabled is on. Your own setting.",
                     new AcceptableValueRange<float>(0f, 2f)));
 
             CctvSecurityAlarmDurationSeconds = config.Bind(
-                SecuritySharedSection,
-                "AlarmDurationSeconds",
+                SecuritySystemsSection,
+                "Alarm Duration Seconds",
                 15f,
                 new ConfigDescription(
-                    "Seconds a camera-triggered alarm remains active after the most recent detection.",
+                    "How long an alarm keeps going after a camera last spotted a player. At the default of 15 the alarm ends 15 seconds after the last sighting. Host decides.",
                     new AcceptableValueRange<float>(3f, 120f)));
 
             // #575: defaults off - protocol events fired often enough to read as
             // background noise, so a fresh install now matches the tuned profile.
             CctvSecurityProtocolEventsEnabled = config.Bind(
-                SecurityProtocolsSection,
-                "Enabled",
+                MainframeSection,
+                "Security Protocols Enabled",
                 false,
-                "When true, the unhacked mainframe schedules fire alarm tests, camera calibration sweeps, and lockdown drills.");
+                "Lets the security mainframe run surprise lockdown drills: an announcement, then the lights go out and gates close over the main entrance and fire exits for 10 seconds. Off by default. Your own setting.");
 
             CctvSecurityProtocolBlackoutSeconds = config.Bind(
-                SecurityProtocolsSection,
-                "ProtocolBlackoutSeconds",
+                MainframeSection,
+                "Protocol Blackout Seconds",
                 2.5f,
                 new ConfigDescription(
-                    "Seconds interior lights shut off at the start of each protocol event while wall alarms stay red.",
+                    "The shortest time the facility lights go out when a lockdown drill starts. Drills already keep the lights off for their full 10 seconds, so at the default of 2.5 this changes nothing you can see. Your own setting.",
                     new AcceptableValueRange<float>(0f, 8f)));
 
             CctvSecurityAlarmBlackoutSeconds = config.Bind(
-                SecurityAlarmsSection,
-                "AlarmBlackoutSeconds",
+                SecuritySystemsSection,
+                "Alarm Blackout Seconds",
                 5f,
                 new ConfigDescription(
-                    "Seconds interior lights shut off when a CCTV security alarm first triggers while wall alarms stay red.",
+                    "When an alarm goes off the facility lights stay out for the whole alarm, and for at least this many seconds. At the default of 5 even a very short alarm keeps the lights off for 5 seconds. Your own setting.",
                     new AcceptableValueRange<float>(0f, 8f)));
 
             CctvSecurityLockdownDrillCooldownSeconds = config.Bind(
-                SecurityProtocolsSection,
-                "LockdownDrillCooldownSeconds",
+                MainframeSection,
+                "Lockdown Drill Cooldown Seconds",
                 300f,
                 new ConfigDescription(
-                    "Minimum seconds between lockdown drill protocol attempts.",
+                    "Base wait between lockdown drills; each wait is a random 2.5 to 4.5 times this. At the default of 300 a drill comes roughly every 12 to 22 minutes, while Security Protocols Enabled is on. Your own setting.",
                     new AcceptableValueRange<float>(60f, 1200f)));
 
             CctvSecurityWallAlarmFixturesEnabled = config.Bind(
-                SecurityAlarmsSection,
+                SecuritySystemsSection,
                 "Spawn Wall Alarm Fixtures",
                 true,
-                "When false, wall-mounted red light and siren fixtures are not spawned. CCTV detection and security alarms continue to function.");
+                "Places red wall alarm lights and sirens near the security cameras, and only cameras with a wall alarm in their room can watch for players. On by default; when off no wall alarms appear, but every camera can still spot players and raise alarms. Host decides.");
 
             CctvSecurityAlarmLightIntensity = config.Bind(
-                SecurityAlarmsSection,
-                "AlarmLightIntensity",
+                SecuritySystemsSection,
+                "Wall Alarm Light Intensity",
                 8f,
                 new ConfigDescription(
-                    "Red light intensity for wall alarm fixtures.",
+                    "How bright the red light of the wall alarms is; 0 turns the light off. The default is 8. Your own setting.",
                     new AcceptableValueRange<float>(0f, 40f)));
 
             CctvSecurityAlarmAudioVolume = config.Bind(
-                SecurityAlarmsSection,
-                "AlarmAudioVolume",
+                SecuritySystemsSection,
+                "Wall Alarm Volume",
                 0.85f,
                 new ConfigDescription(
-                    "Volume multiplier for wall alarm audio sources.",
+                    "How loud the wall alarm sirens are, from 0 (silent) to 1 (full volume). The default is 0.85. Your own setting.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityAlarmCooldownSeconds = config.Bind(
-                SecurityAlarmsSection,
-                "AlarmCooldownSeconds",
+                SecuritySystemsSection,
+                "Alarm Cooldown Seconds",
                 60f,
                 new ConfigDescription(
-                    "Seconds after a security alarm ends during which no camera detects and no new alarm can engage. Set to 0 to disable the cooldown.",
+                    "After an alarm ends, cameras stop watching and no new alarm can start for this many seconds. At the default of 60 players get a minute of quiet; 0 turns the pause off. Host decides.",
                     new AcceptableValueRange<float>(0f, 600f)));
 
             CctvSecurityAlarmAwarenessPingEnabled = config.Bind(
-                SecurityAlarmsSection,
-                "AwarenessPingEnabled",
+                SecuritySystemsSection,
+                "Alarm Noise Enabled",
                 true,
-                "When true, engaging a security alarm emits one vanilla audible-noise event at the tripped camera. Enemies decide for themselves whether to investigate through their own hearing and AI; nothing is forced to path there.");
+                "When an alarm starts, it makes one loud noise at the camera that raised it, which monsters within Alarm Noise Range can hear and may come to check out; each monster decides for itself and none is forced to go there. On by default. Host decides.");
 
             CctvSecurityAlarmAwarenessPingRange = config.Bind(
-                SecurityAlarmsSection,
-                "AwarenessPingRange",
+                SecuritySystemsSection,
+                "Alarm Noise Range",
                 45f,
                 new ConfigDescription(
-                    "Radius in metres of the alarm awareness noise. Enemies outside it are never told the alarm happened; inside it each species' own AI decides whether to investigate. For scale, vanilla runs the ship alarm cord at 30, a boombox at 16, and the item dropship - its loudest event - at 60.",
+                    "How far the alarm noise reaches, in metres; monsters further away never hear it. At the default of 45 it carries further than the ship's alarm cord (30) but not as far as the item dropship (60). Host decides.",
                     new AcceptableValueRange<float>(5f, 150f)));
 
             CctvSecurityAlarmAwarenessPingLoudness = config.Bind(
-                SecurityAlarmsSection,
-                "AwarenessPingLoudness",
+                SecuritySystemsSection,
+                "Alarm Noise Loudness",
                 0.9f,
                 new ConfigDescription(
-                    "Loudness of the alarm awareness noise at its source, before distance falloff. Each enemy compares the attenuated value against its own hearing threshold.",
+                    "How loud the alarm noise is, from 0 (no noise) to 1; some monsters ignore quiet sounds even when they are in range. At the default of 0.9 it is as loud as a boombox. Host decides.",
                     new AcceptableValueRange<float>(0f, 1f)));
 
             CctvSecurityAlarmAwarenessSecondPingEnabled = config.Bind(
-                SecurityAlarmsSection,
-                "AwarenessSecondPingEnabled",
+                SecuritySystemsSection,
+                "Alarm Second Noise Enabled",
                 false,
-                "When true, a single smaller follow-up awareness noise fires a few seconds after the first. Off by default: one ping is an event, a repeating one is a lure.");
+                "Makes a second, smaller alarm noise a few seconds after the first, to nudge monsters that are already on their way. Off by default, so an alarm makes just one noise. Host decides.");
 
             CctvSecurityAlarmAwarenessSecondPingDelaySeconds = config.Bind(
-                SecurityAlarmsSection,
-                "AwarenessSecondPingDelaySeconds",
+                SecuritySystemsSection,
+                "Alarm Second Noise Delay Seconds",
                 4f,
                 new ConfigDescription(
-                    "Seconds after the first awareness ping before the follow-up fires. Requires AwarenessSecondPingEnabled.",
+                    "Seconds between the first alarm noise and the second one. At the default of 4 the second noise comes 4 seconds after the first; it only matters while Alarm Second Noise Enabled is on. Host decides.",
                     new AcceptableValueRange<float>(1f, 20f)));
         }
 
@@ -422,14 +427,18 @@ namespace Y4NGZCompany.Bootstrap
         private const string DefaultStashLootPool =
             "Shotgun Shells|30|1;Small Caliber Rounds|30|1;Heavy Caliber Rounds|30|1;Fuel Tank|15|1;Pistol|10|1;Bolt-Action Rifle|8|1;Assault Rifle|6|1";
 
-        private static ConfigEntry<int> BindStashCount(ConfigFile config, string key, int defaultValue)
+        private static ConfigEntry<int> BindStashCount(
+            ConfigFile config, string key, int defaultValue, bool isMinimum, string moons, string pairedKey)
         {
+            string description = isMinimum
+                ? $"The fewest Company Stashes placed on {moons}; at the default of {defaultValue} each round on those moons has at least {defaultValue} stashes. If it is above {pairedKey}, that maximum is raised to match, and setting both to 0 means no stashes on these moons. Host decides."
+                : $"The most Company Stashes placed on {moons}; at the default of {defaultValue} each round on those moons has at most {defaultValue} stashes. It is never lower than {pairedKey}, and setting both to 0 means no stashes on these moons. Host decides.";
             return config.Bind(
-                StashLootSection,
+                CompanyStashesSection,
                 key,
                 defaultValue,
                 new ConfigDescription(
-                    "Risk-specific Company Stash count bound. Values are normalized so the maximum can never be lower than the minimum. Set both bounds to 0 to disable stashes for this risk tier.",
+                    description,
                     new AcceptableValueRange<int>(0, 12)));
         }
 

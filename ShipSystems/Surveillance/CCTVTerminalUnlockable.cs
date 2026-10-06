@@ -2,6 +2,8 @@ using System;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using CSync.Lib;
+using HarmonyLib;
 using LethalLib.Modules;
 using Unity.Netcode;
 using UnityEngine;
@@ -42,14 +44,169 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // is sized from.
         private static float _defaultPlaceableYOffset;
         private static bool _vanillaStoreSpawnTipShown;
+        private static StartOfRound _ownershipSession;
+        private static ConfigSyncBehaviour _hostConfigSync;
+        private static bool _ownershipReady;
+        private static bool _freeFurnitureEnsured;
 
         /// <summary>
-        /// True when this install sells the terminal through the vanilla ship store
-        /// because the split Ship Systems API is absent. False whenever Ship Systems is
-        /// present, which is the configuration the hidden registration and
-        /// <see cref="UnlockFromShipUpgrade"/> reflection contract serve.
+        /// True unless both Ship Systems and the terminal shop provide the seller.
+        /// This is independent of the host's free-terminal setting so peers register
+        /// the same unlockable and store nodes before config synchronization.
         /// </summary>
         internal static bool SoldInVanillaStore => _soldInVanillaStore;
+
+        // CSync 5.0.1 exposes LocalValue until its NetworkList has been applied.
+        // Require its completion event AND a live override on clients, including after
+        // disconnect (OnDestroy disables overrides and restores the local default).
+        internal static bool ShipStartsWithTerminal
+        {
+            get
+            {
+                if (!HasActiveOwnershipSession())
+                    return false;
+
+                SyncedEntry<bool> setting = SurveillanceBootstrap.Config?.ShipStartsWithCctvTerminal;
+                if (setting == null)
+                    return false;
+                if (CctvNetworkRole.IsServer())
+                    return setting.LocalValue;
+
+                return _hostConfigSync != null && _hostConfigSync.IsSpawned &&
+                       setting.ValueOverridden && setting.Value;
+            }
+        }
+
+        internal static void InitializeOwnership(LethalCCTVConfig config)
+        {
+            config.InitialSyncCompleted += OnInitialConfigSync;
+            config.ShipStartsWithCctvTerminal.Changed += OnFreeSettingChanged;
+        }
+
+        private static bool HasActiveOwnershipSession()
+        {
+            NetworkManager network = NetworkManager.Singleton;
+            GameNetworkManager game = GameNetworkManager.Instance;
+            return _ownershipSession != null && StartOfRound.Instance == _ownershipSession &&
+                   network != null && network.IsListening &&
+                   (game == null || !game.isDisconnecting);
+        }
+
+        private static void OnInitialConfigSync(object sender, EventArgs args)
+        {
+            if (!HasActiveOwnershipSession() || !(sender is ConfigSyncBehaviour sync) || !sync.IsSpawned)
+                return;
+
+            _hostConfigSync = sync;
+            InvalidatePurchaseCache();
+            ApplyFreeEntitlement();
+        }
+
+        private static void OnFreeSettingChanged(object sender, SyncedSettingChangedEventArgs<bool> args)
+        {
+            InvalidatePurchaseCache();
+            if (ShipStartsWithTerminal)
+            {
+                ApplyFreeEntitlement();
+            }
+            else if (TryFindUnlockable(out _, out UnlockableItem item))
+            {
+                // Removing the default must not revoke a grant/purchase already earned
+                // in this save. Vanilla persists hasBeenUnlockedByPlayer independently.
+                item.alreadyUnlocked = false;
+            }
+        }
+
+        internal static void BeginOwnershipSession(StartOfRound start)
+        {
+            _ownershipSession = start;
+            _hostConfigSync = null;
+            _ownershipReady = false;
+            _freeFurnitureEnsured = false;
+            _vanillaStoreSpawnTipShown = false;
+            ResetRuntimeOwnership();
+        }
+
+        internal static void BeforeLoadUnlockables()
+        {
+            _ownershipReady = false;
+            _freeFurnitureEnsured = false;
+            // Clear only memory, BEFORE vanilla restores this save's purchased/storage
+            // data. alreadyUnlocked is not cleared by vanilla's own list reset.
+            ResetRuntimeOwnership();
+        }
+
+        private static void ResetRuntimeOwnership()
+        {
+            ResetRuntimeOwnership(_unlockable);
+            if (TryFindUnlockable(out _, out UnlockableItem item) && !ReferenceEquals(item, _unlockable))
+                ResetRuntimeOwnership(item);
+            _cachedPurchased = false;
+            InvalidatePurchaseCache();
+        }
+
+        private static void ResetRuntimeOwnership(UnlockableItem item)
+        {
+            if (item == null)
+                return;
+            item.alreadyUnlocked = false;
+            item.hasBeenUnlockedByPlayer = false;
+            item.inStorage = false;
+            item.hasBeenMoved = false;
+            item.placedPosition = Vector3.zero;
+            item.placedRotation = Vector3.zero;
+        }
+
+        internal static void AfterLoadUnlockables()
+        {
+            _ownershipReady = true;
+            InvalidatePurchaseCache();
+            ApplyFreeEntitlement();
+        }
+
+        internal static void AfterSyncUnlockables()
+        {
+            // The vanilla ClientRpc has now applied the host's paid ownership flags.
+            if (CctvNetworkRole.IsServer())
+                return;
+            _ownershipReady = true;
+            InvalidatePurchaseCache();
+            ApplyFreeEntitlement();
+        }
+
+        internal static void AfterResetFurniture()
+        {
+            _freeFurnitureEnsured = false;
+            InvalidatePurchaseCache();
+            ApplyFreeEntitlement();
+        }
+
+        private static void ApplyFreeEntitlement()
+        {
+            if (!ShipStartsWithTerminal)
+                return;
+
+            bool server = CctvNetworkRole.IsServer();
+            if (server && !_ownershipReady)
+                return;
+            if (!TryFindUnlockable(out int id, out UnlockableItem item))
+                return;
+
+            // SaveGameValues includes hasBeenUnlockedByPlayer even for alreadyUnlocked
+            // items in UnlockedShipObjects. SyncShipUnlockables sends that same flag.
+            // On clients the synchronized free setting also arms vanilla's owned-item
+            // store guard before its later furniture sync; no purchase RPC is necessary.
+            item.alreadyUnlocked = true;
+            item.hasBeenUnlockedByPlayer = true;
+            InvalidatePurchaseCache();
+            if (!server || _freeFurnitureEnsured)
+                return;
+
+            // LoadUnlockables runs after all scene Awakes, at vanilla's furniture-spawn
+            // readiness boundary. Existing/stored paid furniture is never duplicated or
+            // pulled from storage. No per-frame scan or spawn retry follows success.
+            _freeFurnitureEnsured = item.inStorage || EnsureFurnitureSpawned(id, item);
+        }
 
         internal static void Register()
         {
@@ -63,14 +220,20 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 if (_unlockable == null)
                     return;
 
-                // #393. Ship Systems' custom terminal shop is the seller when installed.
-                // A standalone LethalCCTV has no companion seller, so it registers a genuine
-                // vanilla ship upgrade and owns that purchase state itself.
+                // #393. The Y4NGZ terminal shop is the seller when installed. Without a
+                // companion seller LethalCCTV registers a genuine vanilla ship upgrade and
+                // owns that purchase state itself.
                 // Its store selection node is the one DawnLib warns about when missing.
-                if (IsShipSystemsPresent())
+                // #767: since the #666 split the shop is its own plugin. Ship Systems alone
+                // answers the purchase state but sells nothing, so a profile carrying it
+                // without the shop registered an item no store offered. The hidden path
+                // now needs the seller itself to be loaded.
+                bool shipSystems = IsShipSystemsPresent();
+                bool terminalShop = IsTerminalShopPresent();
+                if (shipSystems && terminalShop)
                 {
                     Unlockables.RegisterUnlockable(_unlockable, StoreType.None);
-                    SurveillanceBootstrap.Log?.LogInfo("[LethalCCTV] Registered CCTV Terminal as a hidden ship unlockable (invisible upgrade marker; no console furniture).");
+                    SurveillanceBootstrap.Log?.LogInfo("[LethalCCTV] Registered CCTV Terminal as a hidden ship unlockable (invisible upgrade marker; no console furniture). Seller: Y4NGZ terminal shop.");
                 }
                 else
                 {
@@ -80,8 +243,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     _unlockable.alwaysInStock = true;
                     Unlockables.RegisterUnlockable(_unlockable, StoreType.ShipUpgrade, price: price);
                     _soldInVanillaStore = true;
+                    string why = shipSystems
+                        ? "Ship Systems present but the Y4NGZ terminal shop is absent"
+                        : terminalShop
+                            ? "Y4NGZ terminal shop present but Ship Systems is absent"
+                            : "Ship Systems and the Y4NGZ terminal shop are absent";
                     SurveillanceBootstrap.Log?.LogInfo(
-                        $"[LethalCCTV] Registered CCTV Terminal as a vanilla store ship upgrade for {price} credits (Ship Systems absent).");
+                        $"[LethalCCTV] Registered CCTV Terminal as a vanilla store ship upgrade for {price} credits ({why}).");
                 }
 
                 LethalLib.Modules.NetworkPrefabs.RegisterNetworkPrefab(_prefab);
@@ -138,15 +306,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         /// Vanilla's <c>StartOfRound.SpawnUnlockable</c> instantiates
         /// <see cref="UnlockableItem.prefabObject"/> as-is, and this prefab is kept
         /// inactive so the template never renders in the ship. Spawning a disabled
-        /// NetworkObject drops its NetworkBehaviours, so the standalone store path wakes
-        /// the template for the duration of that call - the same dance
-        /// <see cref="EnsureFurnitureSpawned"/> already performs for the Contracted path.
+        /// NetworkObject drops its NetworkBehaviours, so every vanilla spawn wakes
+        /// the template for the duration of that call, including saved hidden upgrades.
+        /// <see cref="EnsureFurnitureSpawned"/> uses the same wake/restore contract.
         /// Returns true when the caller must hand the prefab back to
         /// <see cref="EndVanillaFurnitureSpawn"/>.
         /// </summary>
         internal static bool BeginVanillaFurnitureSpawn(int unlockableIndex)
         {
-            if (!_soldInVanillaStore || _prefab == null)
+            if (_prefab == null)
                 return false;
 
             try
@@ -173,9 +341,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void EndVanillaFurnitureSpawn(int unlockableIndex, bool restorePrefabInactive)
         {
-            if (!_soldInVanillaStore)
-                return;
-
             try
             {
                 if (restorePrefabInactive && _prefab != null)
@@ -188,13 +353,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     TryGetSpawnedFurnitureRoot(out GameObject root))
                 {
                     PrepareSpawnedFurnitureRoot(root, id);
-                    // #561: no visible object is produced. The marker's resting pose is
-                    // logged only because it anchors the upgrade root inside the hull.
-                    SurveillanceBootstrap.Log?.LogInfo(
-                        $"[LethalCCTV] CCTV terminal unlocked from the vanilla store purchase; no console furniture is spawned " +
-                        $"(invisible upgrade marker at world={root.transform.position} shipLocal={root.transform.localPosition}). " +
-                        $"The CCTV access button is the purchased affordance.");
-                    AnnounceVanillaStoreInstall();
+                    if (_soldInVanillaStore && !ShipStartsWithTerminal)
+                    {
+                        // #561: the marker is invisible; the access button is the affordance.
+                        SurveillanceBootstrap.Log?.LogInfo(
+                            $"[LethalCCTV] CCTV terminal owned in the vanilla store; no console furniture is spawned " +
+                            $"(invisible upgrade marker at world={root.transform.position} shipLocal={root.transform.localPosition}).");
+                        AnnounceVanillaStoreInstall();
+                    }
                 }
             }
             catch (Exception ex)
@@ -240,6 +406,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // InvalidatePurchaseCache so the unlock is picked up immediately.
         internal static bool IsPurchased()
         {
+            if (!HasActiveOwnershipSession())
+                return false;
+            if (ShipStartsWithTerminal)
+                return true;
+            if (!_ownershipReady)
+                return false;
+
             if (Time.unscaledTime < _purchasedCacheValidUntil)
                 return _cachedPurchased;
 
@@ -327,7 +500,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (!TryFindUnlockable(out int id, out UnlockableItem item) || item == null)
             {
-                SurveillanceBootstrap.Log?.LogWarning("[LethalCCTV] CCTV terminal unlockable was not present in StartOfRound.unlockablesList yet.");
+                // #716 F4: this is the normal first pass of a retry path, not a fault.
+                SurveillanceBootstrap.Log?.LogDebug("[LethalCCTV] CCTV terminal unlockable was not present in StartOfRound.unlockablesList yet.");
                 return false;
             }
 
@@ -703,7 +877,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 if (TryGetSpawnedFurnitureRoot(out GameObject spawned))
                 {
                     PrepareSpawnedFurnitureRoot(spawned, id, item);
-                    SurveillanceBootstrap.Log?.LogInfo("[LethalCCTV] Ensured the CCTV terminal upgrade marker is spawned after the ship-upgrade purchase (no visible furniture).");
+                    SurveillanceBootstrap.Log?.LogInfo("[LethalCCTV] Ensured the owned CCTV terminal upgrade marker is spawned (no visible furniture).");
                     return true;
                 }
             }
@@ -878,6 +1052,26 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             return _shipSystemsPresent.Value;
         }
 
+        // #767. The seller is a plugin, not a type: the shop's catalog reflects into
+        // ShipSystems at runtime, so the only reliable "will something sell this" signal
+        // is the shop's own BepInEx entry. The GUID is Y4NGZCore's
+        // ModuleHarmonyIds.TerminalUpgrades, kept as a literal here so a standalone
+        // LethalCCTV never touches a Core type it may not have loaded.
+        private const string TerminalShopPluginGuid = "com.y4ngz.company.terminalupgrades";
+
+        private static bool IsTerminalShopPresent()
+        {
+            try
+            {
+                return BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(TerminalShopPluginGuid);
+            }
+            catch (Exception ex)
+            {
+                SurveillanceBootstrap.Log?.LogWarning($"[LethalCCTV] Could not query the plugin list for the terminal shop: {ex.Message}");
+                return false;
+            }
+        }
+
         private static void AssignStableNetworkHash(NetworkObject networkObject)
         {
             if (networkObject == null)
@@ -925,5 +1119,56 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
         }
 
+    }
+
+    [HarmonyPatch]
+    internal static class CctvTerminalOwnershipLifecyclePatch
+    {
+        [HarmonyPatch(typeof(StartOfRound), "Awake")]
+        [HarmonyPostfix]
+        private static void OnSessionAwake(StartOfRound __instance)
+        {
+            CCTVTerminalUnlockable.BeginOwnershipSession(__instance);
+            SurveillanceBootstrap bootstrap = SurveillanceBootstrap.Instance;
+            if (bootstrap != null)
+                bootstrap.ApplyTerminalCompanionOwnershipPatchOnce();
+        }
+
+        [HarmonyPatch(typeof(StartOfRound), "LoadUnlockables")]
+        [HarmonyPrefix]
+        private static void BeforeLoadUnlockables()
+        {
+            CCTVTerminalUnlockable.BeforeLoadUnlockables();
+        }
+
+        [HarmonyPatch(typeof(StartOfRound), "LoadUnlockables")]
+        [HarmonyPostfix]
+        private static void AfterLoadUnlockables()
+        {
+            CCTVTerminalUnlockable.AfterLoadUnlockables();
+        }
+
+        [HarmonyPatch(typeof(StartOfRound), "SyncShipUnlockablesClientRpc")]
+        [HarmonyPostfix]
+        private static void AfterSyncUnlockables()
+        {
+            CCTVTerminalUnlockable.AfterSyncUnlockables();
+        }
+
+        [HarmonyPatch(typeof(StartOfRound), "ResetShipFurniture")]
+        [HarmonyPostfix]
+        private static void AfterResetFurniture()
+        {
+            CCTVTerminalUnlockable.AfterResetFurniture();
+        }
+
+        [HarmonyPatch(typeof(GameNetworkManager), "Disconnect")]
+        [HarmonyPostfix]
+        private static void AfterDisconnect()
+        {
+            // Disconnect calls SaveGame synchronously; clear runtime state only AFTER
+            // that call so leaving the lobby cannot erase the saved ownership flag.
+            CCTVTerminalUnlockable.BeginOwnershipSession(null);
+        }
     }
 }

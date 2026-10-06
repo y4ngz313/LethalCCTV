@@ -3,6 +3,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.ShipSystems.Rendering;
 
 namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 {
@@ -11,6 +12,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
     public sealed class OutlineEffect : MonoBehaviour
     {
         public static OutlineEffect Instance { get; private set; }
+        private static readonly System.Collections.Generic.HashSet<OutlineEffect> Instances =
+            new System.Collections.Generic.HashSet<OutlineEffect>();
+        internal bool SquadOnly;
+
+        internal static void RegisterOutline(Outline outline)
+        {
+            foreach (OutlineEffect effect in Instances) if (effect != null) effect.AddOutline(outline);
+        }
+
+        internal static void UnregisterOutline(Outline outline)
+        {
+            foreach (OutlineEffect effect in Instances) if (effect != null) effect.RemoveOutline(outline);
+        }
 
         private readonly LinkedSet<Outline> _outlines = new LinkedSet<Outline>();
         private readonly List<Material> _materialBuffer = new List<Material>();
@@ -49,23 +63,27 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
         private Shader _outlineOverlayShader;
         private Shader _maskShader;
         private CommandBuffer _immediateCommandBuffer;
+        private CommandBuffer _feedCommandBuffer;
         private GameObject _customPassVolumeObject;
         private CustomPassVolume _customPassVolume;
         private Y4NGZHDRPOutlinePass _customPass;
+        private CameraRenderLease _renderLease;
+        private bool _feedMode;
         private bool _renderNextFrame;
         private bool _pipelineCallbacksRegistered;
         private bool _outlineTextureValid;
         private float _nextHdrpTraceAt;
         private float _nextHdrpWarningAt;
 
+        /// <summary>The name this effect's leases carry; FeedGuard logs it.</summary>
+        internal const string EffectName = "cctv-outline";
+
         private static readonly int CompositeTempId = Shader.PropertyToID("_Y4NGZOutlineCompositeTemp");
         private static readonly int OutlineSourceId = Shader.PropertyToID("_OutlineSource");
 
         private void Awake()
         {
-            if (Instance != null && Instance != this)
-                Destroy(Instance);
-
+            Instances.Add(this);
             Instance = this;
         }
 
@@ -83,9 +101,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
         private void OnEnable()
         {
             if (GraphicsSettings.currentRenderPipeline != null)
+            {
+                AcquireRenderOwnership();
                 EnsureHdrpCustomPass();
+            }
             else
+            {
                 RegisterPipelineCallbacks();
+            }
 
             Outline[] outlines = FindObjectsOfType<Outline>();
             for (int i = 0; i < outlines.Length; i++)
@@ -98,6 +121,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
         private void OnDisable()
         {
             UnregisterPipelineCallbacks();
+            ReleaseRenderOwnership();
             if (_customPassVolume != null)
                 _customPassVolume.enabled = false;
         }
@@ -138,10 +162,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
         private void OnDestroy()
         {
+            Instances.Remove(this);
             if (Instance == this)
                 Instance = null;
 
             UnregisterPipelineCallbacks();
+            ReleaseRenderOwnership();
             if (_customPassVolumeObject != null)
             {
                 Destroy(_customPassVolumeObject);
@@ -154,6 +180,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             {
                 _immediateCommandBuffer.Release();
                 _immediateCommandBuffer = null;
+            }
+
+            if (_feedCommandBuffer != null)
+            {
+                _feedCommandBuffer.Release();
+                _feedCommandBuffer = null;
             }
 
             if (renderTexture != null)
@@ -186,11 +218,117 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
             foreach (Outline outline in _outlines)
             {
-                if (outline != null && outline.enabled && outline.Renderer != null && outline.Renderer.enabled)
+                if (outline != null && outline.enabled && (!SquadOnly || outline.SquadHighlighted) &&
+                    outline.Renderer != null && (outline.Renderer.enabled || outline.SquadHighlighted))
                     return true;
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Takes the effect's hold on its camera through Core's <see cref="CameraRenderProfile"/>. A
+        /// CCTV feed camera refuses settings leases, so there the effect is an overlay: an overlay
+        /// lease the feed guard can see and revoke, no custom pass, and the outline composited by
+        /// <see cref="NightVisionBaker"/> after the bake (<see cref="CompositeFeedOverlay"/>). Any other
+        /// camera (the gameplay camera) holds its CustomPass frame setting on through a ref-counted
+        /// lease shared with Contracted's objective hint, and draws through a custom pass volume that
+        /// targets that camera only.
+        /// </summary>
+        private void AcquireRenderOwnership()
+        {
+            Camera camera = ResolveSourceCamera();
+            if (camera == null)
+                return;
+
+            _feedMode = CameraRenderProfile.IsFeed(camera);
+            if (_feedMode)
+            {
+                if (_customPassVolume != null)
+                    _customPassVolume.enabled = false;
+                CameraRenderProfile.TryBeginOverlay(camera, EffectName, out _renderLease);
+                return;
+            }
+
+            // Refused only on a camera without HDRP camera data (its defaults already run custom
+            // passes) or under an opposite-value lease; the pass still registers either way.
+            CameraRenderProfile.TryAcquireFrameSetting(camera, FrameSettingsField.CustomPass, true, EffectName,
+                out _renderLease);
+        }
+
+        private void ReleaseRenderOwnership()
+        {
+            if (_renderLease != null)
+                _renderLease.Dispose();
+            _renderLease = null;
+        }
+
+        /// <summary>
+        /// Re-takes the hold when the camera's feed classification changed (a slot rebind) or the
+        /// lease ended underneath the effect. Allocation-free while the hold is intact. A lease the feed
+        /// guard revoked stays refused until the feed's profile is released.
+        /// </summary>
+        internal void RefreshRenderOwnership()
+        {
+            if (!isActiveAndEnabled || GraphicsSettings.currentRenderPipeline == null)
+                return;
+
+            Camera camera = ResolveSourceCamera();
+            if (camera == null)
+                return;
+
+            bool feed = CameraRenderProfile.IsFeed(camera);
+            if (feed == _feedMode && _renderLease != null && _renderLease.IsActive)
+                return;
+
+            ReleaseRenderOwnership();
+            AcquireRenderOwnership();
+            EnsureHdrpCustomPass();
+        }
+
+        /// <summary>
+        /// Called by <see cref="NightVisionBaker"/> right after it bakes <paramref name="camera"/>'s raw
+        /// frame into <paramref name="display"/>. Draws the outline mask with an owned CommandBuffer
+        /// and the feed camera's own matrices, then composites it over the baked image with the
+        /// outline shader's additive pass, which leaves every non-outline pixel as baked. False when
+        /// the camera has no active feed overlay.
+        /// </summary>
+        internal static bool CompositeFeedOverlay(Camera camera, RenderTexture display)
+        {
+            if (camera == null || display == null)
+                return false;
+
+            foreach (OutlineEffect effect in Instances)
+            {
+                if (effect != null && effect._feedMode && effect.sourceCamera == camera)
+                    return effect.CompositeFeed(display);
+            }
+
+            return false;
+        }
+
+        private bool CompositeFeed(RenderTexture display)
+        {
+            if (!isActiveAndEnabled || _renderLease == null || !_renderLease.IsActive || !HasActiveOutlines())
+                return false;
+
+            if (_feedCommandBuffer == null)
+                _feedCommandBuffer = new CommandBuffer { name = "Y4NGZ CCTV Feed Outline" };
+
+            CommandBuffer commandBuffer = _feedCommandBuffer;
+            commandBuffer.Clear();
+            if (!RenderOutlineBuffer(commandBuffer) || outlineShaderMaterial == null || renderTexture == null)
+                return false;
+
+            outlineShaderMaterial.SetTexture(OutlineSourceId, renderTexture);
+            commandBuffer.GetTemporaryRT(CompositeTempId, display.width, display.height, 0, FilterMode.Bilinear,
+                display.format, display.sRGB ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear);
+            commandBuffer.Blit(display, CompositeTempId);
+            commandBuffer.Blit(CompositeTempId, display, outlineShaderMaterial, 1);
+            commandBuffer.ReleaseTemporaryRT(CompositeTempId);
+            Graphics.ExecuteCommandBuffer(commandBuffer);
+            TraceHdrpComposite(display.width, display.height);
+            return true;
         }
 
         private void EnsureHdrpCustomPass()
@@ -202,10 +340,18 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             if (camera == null)
                 return;
 
+            // A feed never runs custom passes; its outline is the baker's overlay.
+            if (CameraRenderProfile.IsFeed(camera))
+            {
+                if (_customPassVolume != null)
+                    _customPassVolume.enabled = false;
+                return;
+            }
+
             if (_customPassVolume != null && _customPass != null)
             {
                 _customPass.Owner = this;
-                _customPassVolume.targetCamera = null;
+                _customPassVolume.targetCamera = camera;
                 _customPassVolume.enabled = isActiveAndEnabled;
                 return;
             }
@@ -226,7 +372,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             _customPassVolume.isGlobal = true;
             _customPassVolume.priority = 1000f;
             _customPassVolume.injectionPoint = CustomPassInjectionPoint.AfterPostProcess;
-            _customPassVolume.targetCamera = null;
+            _customPassVolume.targetCamera = camera;
             _customPassVolume.customPasses.Clear();
 
             CustomPass pass = _customPassVolume.AddPassOfType(typeof(Y4NGZHDRPOutlinePass));
@@ -259,7 +405,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
             _nextHdrpTraceAt = Time.unscaledTime + 5f;
             SurveillanceBootstrap.Log?.LogInfo(
-                $"[LethalCCTV] OutlineEffect HDRP custom pass compositing {_outlines.Count} outline renderer(s) at {width}x{height}.");
+                $"[LethalCCTV] OutlineEffect {(_feedMode ? "feed overlay" : "HDRP custom pass")} compositing {_outlines.Count} outline renderer(s) at {width}x{height}.");
         }
 
         public void UpdateMaterialsPublicProperties()
@@ -421,7 +567,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
         private void DrawOutline(CommandBuffer commandBuffer, Outline outline)
         {
-            if (outline == null || outline.Renderer == null || !outline.enabled)
+            if (outline == null || outline.Renderer == null || !outline.enabled ||
+                (SquadOnly && !outline.SquadHighlighted))
                 return;
 
             Material[] sharedMaterials = outline.SharedMaterials;
@@ -525,11 +672,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp
             };
-            extraRenderTexture = new RenderTexture(width, height, 16, RenderTextureFormat.ARGB32)
-            {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp
-            };
+            // The between-colours pass is the only reader of the second texture; the CCTV and
+            // squad-ping configurations never enable it, so they hold one camera-sized RT, not two.
+            extraRenderTexture = addLinesBetweenColors
+                ? new RenderTexture(width, height, 16, RenderTextureFormat.ARGB32)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp
+                }
+                : null;
             if (outlineCamera != null)
                 outlineCamera.targetTexture = renderTexture;
         }
@@ -593,15 +744,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             if (_maskShader != null)
                 return _maskShader;
 
-            if (GraphicsSettings.currentRenderPipeline != null)
-            {
-                _maskShader = Shader.Find("HDRP/Unlit")
-                    ?? Shader.Find("Hidden/Internal-Colored")
-                    ?? Shader.Find("Unlit/Color");
-            }
-
-            if (_maskShader == null)
-                _maskShader = _outlineBufferShader;
+            // Use the shipped emissive RGB mask in both pipelines. HDRP/Unlit
+            // depends on camera/material state that the stripped CCTV pass does
+            // not supply; its empty mask made an otherwise active ping invisible.
+            _maskShader = _outlineBufferShader;
 
             return _maskShader;
         }
@@ -628,19 +774,20 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
         }
 
+        private static readonly string[] MaskPassNames =
+        {
+            "ForwardOnly",
+            "Forward",
+            "SRPDefaultUnlit",
+            "DepthForwardOnly"
+        };
+
         private static int ResolveMaskMaterialPass(Material material)
         {
             if (material == null)
                 return 0;
 
-            string[] passNames =
-            {
-                "ForwardOnly",
-                "Forward",
-                "SRPDefaultUnlit",
-                "DepthForwardOnly"
-            };
-
+            string[] passNames = MaskPassNames;
             for (int i = 0; i < passNames.Length; i++)
             {
                 int pass = material.FindPass(passNames[i]);

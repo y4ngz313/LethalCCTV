@@ -21,19 +21,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const float PanelMaxWidth = 620f;
         private const float PanelMinHeight = 56f;
 
-        // #541 — what is actually bound in a focus session, verified end to
-        // end. RMB is the vanilla PingScan binding that CameraOperatorPingScanPatch
-        // redirects into MonitorFocus.TriggerCameraContextOrScan; the wheel only
-        // drives radar zoom, and only while SPACE is held. There is no camera zoom
-        // — MonitorFocus._zoomByCamera is never written, so do not advertise one.
+        // Left click owns station interactions and squad outlines. The wheel drives camera zoom
+        // (or radar zoom while SPACE is held).
         private const string PlayerControlsText =
             "CCTV CONTROLS\n" +
             "MOUSE   AIM CAMERA\n" +
             "ARROWS  CAMERA LIST\n" +
             "SPACE   RADAR VIEW\n" +
+            "WHEEL   CAMERA ZOOM\n" +
             "SPC+WHL RADAR ZOOM\n" +
-            "LMB     PING\n" +
-            "RMB     TARGET\n" +
+            "LMB     HACK / SQUAD PING\n" +
             "V HOLD  WALKIE\n" +
             "E/ESC   EXIT";
 

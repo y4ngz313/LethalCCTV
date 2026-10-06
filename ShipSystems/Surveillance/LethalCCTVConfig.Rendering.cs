@@ -11,60 +11,67 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private void BindRendering(ConfigFile cfg)
         {
+            cfg.Bind(DiagnosticsSection, "Feed Quality Revision", 1, "Internal marker for a one-time settings upgrade, set to 1 once it has run; do not edit. Your own setting.");
             // === Phase 2 — Render Performance ===
             RenderHzPerMonitor = cfg.Bind(
-                PerformanceSection,
+                ShipMonitorSection,
                 "Render Hz Per Monitor",
                 24,
-                "Per-monitor render frequency in Hz. Default 24. Tunable 5–30; above 30 risks visible FPS dip on lower-end hardware. Per-client; local entry, not synced.");
+                "How many times a second the camera feed you are watching updates. At the default of 24 the picture moves smoothly; lower values save frame rate, the mod allows 1 to 30, and anything above 24 is capped while you sit at the CCTV station. Your own setting.");
 
             BodycamRenderHz = cfg.Bind(
-                PerformanceSection,
+                ShipMonitorSection,
                 "Bodycam Render Hz",
                 15,
-                "Render frequency for the selected purchased OpenBodyCams player feed. Every non-selected bodycam camera stays disabled. Tunable 5–30; lower values reduce the extra scene-render cost. Per-client; local entry, not synced.");
+                "How many times a second the body camera feed you have selected updates when the OpenBodyCams mod is installed; every other body camera stays off. The default is 15 and the mod keeps it between 5 and 30; lower values save frame rate. Your own setting.");
 
             DynamicActiveRendererEnabled = cfg.Bind(
-                PerformanceSection,
-                "Dynamic Active Renderer Enabled",
+                ShipMonitorSection,
+                "Slow Unfocused Panes",
                 true,
-                "When true, only the focused active CCTV pane renders at full Hz. Other bound panes render at Inactive Pane Render Hz. Disable to restore the previous all-four-bound-cameras-at-full-rate behavior. Per-client; local entry, not synced.");
+                "Updates only the camera pane you are focused on at full speed and the other panes at Unfocused Pane Render Hz, which saves frame rate. On by default; turn it off to update all four panes at full speed. Your own setting.");
 
             InactivePaneRenderHz = cfg.Bind(
-                PerformanceSection,
-                "Inactive Pane Render Hz",
+                ShipMonitorSection,
+                "Unfocused Pane Render Hz",
                 3,
-                "Render frequency for non-active panes while CCTV focus is open and Dynamic Active Renderer is enabled. Set 0 to freeze inactive panes except for one-shot wake/page renders. Per-client; local entry, not synced.");
+                "How many times a second the panes you are not focused on update while Slow Unfocused Panes is on. At the default of 3 they move in slow steps, and 0 freezes them apart from brief refreshes when they wake or change page. Your own setting.");
 
             UnmannedIdleRenderHz = cfg.Bind(
-                PerformanceSection,
+                ShipMonitorSection,
                 "Unmanned Idle Render Hz",
                 3,
-                "Render frequency for the one camera left on the ship monitor wall while nobody is operating the station. Only that single feed renders; every other camera stays off. Tunable 0-10; 0 freezes the wall on the last rendered frame (the pre-0.0.x behaviour). Per-client; local entry, not synced.");
+                "How many times a second the one camera feed left on the ship monitor updates while nobody is using the CCTV station; every other camera stays off. At the default of 3 it moves in slow steps, 0 freezes it on its last picture, and the mod caps it at 10. Your own setting.");
 
             RenderRTWidth = cfg.Bind(
-                PerformanceSection,
-                "Render RT Width",
-                512,
-                "RenderTexture width in pixels. Height is derived 4:3. Default 512 (so 512x384). Lower values reduce GPU cost but blur CCTV feeds. Per-client; local entry, not synced.");
+                ShipMonitorSection,
+                "Feed Resolution Width",
+                768,
+                "How many pixels wide each camera feed is, from 64 to 1024, with the height following at 4:3, so the default of 768 gives 768 by 576. Higher values make feeds sharper and cost more performance, lower values make them blurrier and cheaper; restart the game after changing it. Your own setting.");
 
             FarClipPlane = cfg.Bind(
-                PerformanceSection,
-                "Far Clip Plane",
-                40.0f,
-                "Camera far clip plane in meters. Default 40 m restores the pre-0.0.29 CCTV view distance. Lower values reduce overdraw but can make feeds too short-ranged. Per-client aesthetic; local entry, not synced.");
+                ShipMonitorSection,
+                "View Distance",
+                120.0f,
+                "How far a camera draws, in metres, from 4 to 250. The default of 120 reaches the far end of large rooms; lower values save some performance but show a blank background where the view is cut off. Your own setting.");
 
             FieldOfView = cfg.Bind(
-                PerformanceSection,
+                ShipMonitorSection,
                 "Field Of View",
                 75.0f,
-                "Camera field-of-view in degrees. Default 75. Per-client aesthetic; local entry, not synced.");
+                "How wide the camera view is, in degrees. The default of 75 is also the widest allowed, so this setting can only narrow the view. Your own setting.");
 
             CCTVShadowMapsEnabled = cfg.Bind(
-                PerformanceSection,
-                "CCTV Shadow Maps Enabled",
-                false,
-                "If true, CCTV cameras render HDRP shadow maps. Default false keeps security feeds cheap; the night-vision shader and exposure volume provide legibility without asking every CCTV render to rebuild dungeon shadows. Per-client; local entry, not synced.");
+                ShipMonitorSection,
+                "CCTV Shadows Enabled",
+                true,
+                "Draws shadows in camera feeds, which gives rooms depth. On by default; turn it off for better performance on slower graphics cards, and it applies the next time a camera is put on the monitor. Your own setting.");
+
+            CCTVAmbientOcclusionEnabled = cfg.Bind(
+                ShipMonitorSection,
+                "CCTV Ambient Occlusion Enabled",
+                true,
+                "Draws ambient occlusion in camera feeds, the soft darkening where walls, floors and objects meet, on maps that support it. On by default; turn it off for better performance, and it applies the next time a camera is put on the monitor. Your own setting.");
         }
     }
 }

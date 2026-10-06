@@ -75,84 +75,21 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const float STATION_POSE_SETTLE_YAW_TOLERANCE_DEG = 0.5f;
         private const float STATION_POSE_SETTLE_CAMERA_TOLERANCE_DEG = 0.5f;
         private const float API_ROOT_WORLD_TELEMETRY_INTERVAL_SECONDS = 1f;
-        // Round-1 Interactions API port: the camera begins immediately and is
-        // settled on the button before the authored clip's frame-11 contact.
+        // One eased camera move, synchronized with the procedural entry contact.
         private const float STATION_FOCUS_ENTER_BUTTON_PRESS_DELAY = 0f;
-        // Timing derives from v5's 33 frames at 30 fps, not the retired runtime
-        // HandEnter* drive: hold through contact, pan over frames 15-27, then
-        // reach the clamped monitor view at the 1.10-second clip end.
-        private const float STATION_FOCUS_ENTER_TOTAL_SECONDS = 1.10f;
-        private const float STATION_INTRO_HAND_FOLLOW_SMOOTHING_RATE = 14f;
-        private const float STATION_INTRO_HAND_FOLLOW_BLEND_IN_SECONDS = 0.15f;
-        private const float STATION_INTRO_HAND_FOLLOW_BLEND_OUT_START_T = 0.73f;
-        private const float STATION_INTRO_HAND_FOLLOW_MIN_DIRECTION_SQR_M = 0.0025f;
-        private const string STATION_INTRO_HAND_FOLLOW_TARGET_NAME = "ArmsLeftArm_target";
-        private const string STATION_INTRO_HAND_FOLLOW_TARGET_PATH =
-            "ScavengerModelArmsOnly/metarig/spine.003/RigArms/LeftArm/ArmsLeftArm_target";
-        private const float STATION_FOCUS_ENTER_KNOT_BUTTON = 0.218f;      // 0.24s: settled before 0.367s contact
-        private const float STATION_FOCUS_ENTER_KNOT_BUTTON_HOLD = 0.455f; // 0.50s: begin frame-15-to-27 pan
-        private const float STATION_FOCUS_ENTER_KNOT_LEVER = 0.818f;       // 0.90s: lever view at frame 27
-        // Presentation-only widening at the two close-up beats. The eye path
-        // remains unchanged so hand reach, contact timing, and camera motion
-        // keep the authored choreography; the extra FOV eases back to zero at
-        // the final knot so steady-state uses the player's preserved FOV.
-        private const float STATION_FOCUS_ENTER_BUTTON_FOV_WIDEN_DEG = 6f;
-        private const float STATION_FOCUS_ENTER_LEVER_FOV_WIDEN_DEG = 4f;
-        private const float STATION_FOCUS_ENTER_BUTTON_LOOK_BLEND_END_T = 0.12f;
-        // Camera-lean redesign (2026-07-22): the press eye is derived from the
-        // button contact so the camera travels INTO arm reach (the shoulder
-        // anchor rides the camera; nothing moves the arms camera-relative).
-        // Baseline stance before the lean solve pulls it toward the button.
-        private const float STATION_FOCUS_ENTER_BUTTON_EYE_FRACTION = 0.40f;
-        // Max allowed anchor->contact distance at the press beat: usable left
-        // reach 0.755 (0.778 chain x0.97) minus margin for the left shoulder's
-        // offset from the anchor midpoint (Test 33 logs put the roots ~0.2m
-        // either side of it; 0.70 left the finger hovering).
-        // Two caveats, both 2026-07-28:
-        //  - "yaw-flat" no longer describes the anchor unconditionally. Since
-        //    b72d60f `Api Camera Anchor Pitch Relative` defaults true, so the
-        //    anchor frame is the FULL pitched camera rotation unless a profile
-        //    turns it off. ResolveApiShoulderAnchorTarget owns that choice.
-        //  - the x0.97 usable-reach fraction is ApiReachAssistUsableReachFraction,
-        //    which only applies inside the reach-assist block; that block is
-        //    gated on `Api Reach Assist` (retired, default false), so at runtime
-        //    the effective clamp is the full chain span, not 0.755.
-        private const float STATION_FOCUS_ENTER_PRESS_REACH_BOUND_M = 0.60f;
-        // Settle/lever bound is looser: pulling the authored settle eye is a
-        // visible framing change, and the lever only needs the hand planted.
-        // Test 39: 0.70 ate every attempt to move the settle eye back (pull
-        // log 0.199m each enter). Usable left reach is (0.4037+0.3748)x0.97
-        // = 0.755m, so 0.75 is the honest ceiling — beyond it the planted
-        // hand physically cannot stay on the grip.
-        private const float STATION_FOCUS_ENTER_LEVER_REACH_BOUND_M = 0.75f;
-        // Test 39 (user-directed): the settle framing showed neither the
-        // monitor top nor the throttle/hand — the operating viewpoint sits
-        // too close/low. Offset the F1 focus placement back along its look
-        // and slightly up before the lever-reach pull; the pull still clamps
-        // whatever reach cannot afford. Applied only to the station FOCUS
-        // anchor (never the radar glance) so every consumer — enter target,
-        // path build, steady-state hold — shares one offset eye.
-        // Test 41: still short — the monitor top edge was cut at frame top
-        // and the throttle sat below the frame during control. More back +
-        // notably more up (a higher eye compresses the vertical span the
-        // desk-to-monitor sweep needs), plus a small look-up so the full
-        // display fits. The 0.75 lever bound still clamps position; raising
-        // the placement tilts the pull ray so the clamped eye lands higher.
-        private const float STATION_FOCUS_EYE_PULLBACK_M = 0.22f;
-        private const float STATION_FOCUS_EYE_RAISE_M = 0.12f;
-        // Look-up applied after the pitch clamp (the clamp only caps
-        // downward pitch, so this cannot fight it).
-        private const float STATION_FOCUS_EYE_PITCH_UP_DEG = 3.5f;
-        // Never lean the eye closer to the button than this, even if the
-        // reach solve would allow it (keeps the near plane off the desk).
-        private const float STATION_FOCUS_ENTER_MIN_CONTACT_EYE_DISTANCE_M = 0.35f;
+        private const float STATION_FOCUS_ENTER_TOTAL_SECONDS = CctvIntroTiming.Duration;
+        // Pull back and lower the operating eye; include the control surface below
+        // the readable monitor. Applied consistently at entry and during operation.
+        private const float STATION_FOCUS_EYE_PULLBACK_M = 0.09f;
+        private const float STATION_FOCUS_EYE_RAISE_M = -0.10f;
+        private const float STATION_FOCUS_EYE_PITCH_UP_DEG = -4f;
         // Fallback only: the enter hand driver fires the flip at actual finger
         // contact (CompleteStationFeedFlipAtPressContact). This timer catches
         // configs where the local authored arms are disabled.
-        private const float STATION_FOCUS_ENTER_FEED_FLIP_DELAY = 0.60f;
+        private const float STATION_FOCUS_ENTER_FEED_FLIP_DELAY = CctvIntroTiming.PressContact;
         private const float STATION_FOCUS_EXIT_HAND_RELEASE_DELAY = 0.15f;
-        // Keep a short input margin after the 1.10-second enter/camera path.
-        private const float STATION_CAMERA_CONTROL_ENABLE_DELAY = 1.35f;
+        // Keep a short input margin after the shared enter/camera path.
+        private const float STATION_CAMERA_CONTROL_ENABLE_DELAY = CctvIntroTiming.Duration + 0.10f;
         private const int INTRO_CAMERA_FOCUS_RENDER_TELEMETRY_BUDGET = 16;
         // The vanilla operator station uses a locked monitor focus. Holding SPACE
         // eases the seated camera toward the right radar screen with a small
@@ -333,6 +270,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         /// stalls pause the camera path (Test 34), and a wall clock would
         /// fire the press while the camera is still approaching.
         /// </summary>
+        internal const float OperatorEnterDurationSeconds = STATION_FOCUS_ENTER_TOTAL_SECONDS;
         internal static float EnterPresentationClockSeconds =>
             _focusViewAnimating && !_focusViewExitPending && _focusViewEnterPath != null
                 ? _focusViewAnimationElapsedSeconds
@@ -527,21 +465,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             internal Quaternion Rotation;
         }
         private static FocusPathKnot[] _focusViewEnterPath;
-        private static Transform _stationIntroHandFollowTarget;
-        private static Quaternion _stationIntroHandFollowSmoothedRotation = Quaternion.identity;
-        private static bool _stationIntroHandFollowRotationInitialized;
-        private static bool _stationIntroHandFollowResolutionAttempted;
-        private static bool _stationIntroHandFollowTargetWasResolved;
-        private static bool _stationIntroHandFollowActivated;
-        private static bool _stationIntroHandFollowActiveLogged;
-        private static bool _stationIntroHandFollowFallbackLogged;
-        private static bool _stationIntroHandFollowSettleLogged;
         // Enter sweep waypoint (2026-07-12): the enter camera path passes a
         // mid rotation aimed at the ship throttle/lever (button -> throttle ->
         // monitor, user design). Quadratic de-Casteljau blend through it.
-        private static bool _focusViewAnimationHasWaypoint;
-        private static Vector3 _focusViewWaypointPosition;
-        private static Quaternion _focusViewWaypointRotation;
         private static bool _physicalFocusViewActive;
         private static bool _stationThirdPersonPreviewActive;
         private static bool _stationThirdPersonDebugPersistent;
@@ -728,11 +654,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static readonly HashSet<string> _boundaryInputRecoveryLogs =
             new HashSet<string>(StringComparer.Ordinal);
         private static float _stationRadarLookBlend;
-        // The body-yaw and cameraUp the station actually renders with SPACE up.
-        // Sampled on every idle glance frame; the SPACE glance blends out of
-        // these rather than out of the focus anchor, which is a different pose.
-        private static float _stationGlanceRestYawDeg;
-        private static float _stationGlanceRestPitchDeg;
         // Press-contact feed flip (see STATION_FOCUS_ENTER_FEED_FLIP_DELAY).
         private static bool _stationFeedFlipPending;
         private static float _stationFeedFlipAt;

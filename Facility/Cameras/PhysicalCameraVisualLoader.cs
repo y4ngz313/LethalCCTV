@@ -58,12 +58,37 @@ namespace Y4NGZCompany.Facility.Cameras
                     return;
                 }
 
+                if (!TryBindRig(_cameraPrefab, out _, out _, out _, out _, out _))
+                {
+                    _cameraPrefab = null;
+                    return;
+                }
+
                 SurveillanceBootstrap.Log?.LogInfo($"[LethalCCTV][CameraVisual] Loaded physical camera prefab '{_cameraPrefab.name}' from '{bundlePath}'.");
             }
             catch (Exception ex)
             {
                 SurveillanceBootstrap.Log?.LogWarning($"[LethalCCTV][CameraVisual] Bundle load failed: {ex.GetType().Name}: {ex.Message}. Using generated fallback cameras.");
             }
+        }
+
+        internal static bool TryBindRig(GameObject root, out Transform bracket, out Transform yoke,
+            out Transform head, out Transform led, out Transform lens)
+        {
+            bracket = root != null ? root.transform.Find("Bracket") : null;
+            yoke = bracket != null ? bracket.Find("Yoke") : null;
+            head = yoke != null ? yoke.Find("Head") : null;
+            led = head != null ? head.Find("LED_Socket") : null;
+            lens = head != null ? head.Find("Lens_Socket") : null;
+            if (bracket != null && yoke != null && head != null && led != null && lens != null)
+                return true;
+
+            Transform[] nodes = root != null ? root.GetComponentsInChildren<Transform>(true) : Array.Empty<Transform>();
+            string[] names = new string[nodes.Length];
+            for (int i = 0; i < nodes.Length; i++) names[i] = nodes[i].name;
+            SurveillanceBootstrap.Log?.LogWarning(
+                $"[LethalCCTV][CameraVisual] Invalid named rig; expected Bracket/Yoke/Head with LED_Socket and Lens_Socket; found [{string.Join(", ", names)}]. Using generated fallback cameras.");
+            return false;
         }
 
         private static GameObject PickPrefab(UnityEngine.Object[] assets, string requiredTerm, string preferredTerm)

@@ -635,6 +635,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static bool IsStationRadarLookHeld()
         {
+            if (CctvDeviceCommandLine.ConsumesInput) return false;
             if (SurveillanceBootstrap.Config != null && !SurveillanceBootstrap.Config.AllowRadarView.Value)
                 return false;
 

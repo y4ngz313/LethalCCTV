@@ -6,7 +6,7 @@ namespace Y4NGZCompany.Facility.Security
     {
         /// <summary>
         /// Global time-to-detection slowdown (#466). Deliberately a constant rather than a
-        /// change to the config defaults: the dialled-in per-tier DetectionSeconds keeps
+        /// change to the config defaults: the dialled-in per-tier Detection Seconds keeps
         /// meaning what it always meant, and this rebalance rides on top of it.
         ///
         /// It is applied once, here, while the struct is built - so it lands after every
@@ -19,6 +19,7 @@ namespace Y4NGZCompany.Facility.Security
         private const float GlobalDetectionSlowdownMultiplier = 1.25f;
 
         public readonly bool Enabled;
+        public readonly bool AllCamerasPassive;
         public readonly float ActiveCameraRatio;
         public readonly float ActiveCameraRatioRiskD;
         public readonly float ActiveCameraRatioRiskC;
@@ -47,6 +48,7 @@ namespace Y4NGZCompany.Facility.Security
 
         public CctvSecurityConfig(
             bool enabled,
+            bool allCamerasPassive,
             float activeCameraRatio,
             float activeCameraRatioRiskD,
             float activeCameraRatioRiskC,
@@ -74,6 +76,7 @@ namespace Y4NGZCompany.Facility.Security
             float awarenessSecondPingDelaySeconds)
         {
             Enabled = enabled;
+            AllCamerasPassive = allCamerasPassive;
             ActiveCameraRatio = UnityEngine.Mathf.Clamp(activeCameraRatio, 0f, 1f);
             ActiveCameraRatioRiskD = UnityEngine.Mathf.Clamp(activeCameraRatioRiskD, 0f, 1f);
             ActiveCameraRatioRiskC = UnityEngine.Mathf.Clamp(activeCameraRatioRiskC, 0f, 1f);
@@ -108,6 +111,7 @@ namespace Y4NGZCompany.Facility.Security
                 char tier = ContractsBridge.GetCurrentRiskTierCached();
                 return new CctvSecurityConfig(
                     ResolveEnabledForTier(tier),
+                    SurveillanceBootstrap.Config?.AllCamerasPassive?.Value ?? false,
                     CctvModuleConfig.CctvSecurityActiveCameraRatio?.Value ?? 0.20f,
                     CctvModuleConfig.CctvSecurityActiveCameraRatioRiskD?.Value ?? 0.10f,
                     CctvModuleConfig.CctvSecurityActiveCameraRatioRiskC?.Value ?? 0.15f,

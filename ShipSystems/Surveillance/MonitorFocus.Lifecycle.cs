@@ -460,13 +460,52 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 || (_physicalFocusUiCamera != null && _physicalFocusUiCamera.enabled);
         }
 
+        /// <summary>
+        /// Terminal / quick menu / chat entry own the input flags legitimately; they
+        /// suppress both the self-heal and the exit-time stash replay.
+        /// </summary>
+        private static bool HasBlockingUiInputContext(PlayerControllerB player)
+        {
+            if (player == null) return false;
+            if (player.inTerminalMenu) return true;
+            if (player.quickMenuManager != null && player.quickMenuManager.isMenuOpen) return true;
+            return player.isTypingChat;
+        }
+
+        /// <summary>
+        /// Someone other than the focus lock can explain an asserted input flag:
+        /// a live vanilla special-animation context, the seated mainframe session,
+        /// one of the two in-plugin look+move placement captures, or death.
+        /// Gates the relaxed one-flag self-heal branch (#1082) and the exit-time
+        /// "is the captured owner still live" test; the all-three-flag branch keeps
+        /// its original #452 behaviour and is NOT gated on this.
+        /// </summary>
+        private static bool HasOtherInputLockOwner(PlayerControllerB player)
+        {
+            if (player == null) return false;
+            if (player.isPlayerDead) return true;
+            if (player.inSpecialInteractAnimation || player.enteringSpecialAnimation) return true;
+            if (player.isClimbingLadder || player.inShockingMinigame || player.inVehicleAnimation) return true;
+            if (player.inAnimationWithEnemy != null) return true;
+            if (player.inSpecialMenu) return true;
+            // In-plugin owners that assert look+move without disableInteract and
+            // restore their own capture: the turret placement editor (static) and
+            // the in-focus camera placement editor (cancelled later in cleanup).
+            if (ShipTurretController.PlacementActive) return true;
+            if (_placementEditSession != null) return true;
+            if (MainframeInteractionSession.IsAnyLocalSessionActive) return true;
+            return false;
+        }
+
         private static bool LooksLikeStaleFocusInputLock(PlayerControllerB player)
         {
             if (player == null) return false;
-            if (player.inTerminalMenu) return false;
-            if (player.quickMenuManager != null && player.quickMenuManager.isMenuOpen) return false;
-            if (player.isTypingChat) return false;
-            return player.disableLookInput && player.disableMoveInput && player.disableInteract;
+            return CctvFocusInputLockPolicy.LooksLikeStaleLock(
+                player.disableLookInput,
+                player.disableMoveInput,
+                player.disableInteract,
+                HasBlockingUiInputContext(player),
+                HasOtherInputLockOwner(player));
         }
 
         private static void ClearResidualFocusAnimation(PlayerControllerB player, string reason)
@@ -513,12 +552,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         /// ForceExit's early-return branches are reached exactly when MonitorFocus
         /// owns no live session state, so nothing found here belongs to an in-flight
         /// focus session — only to one that already ended badly. RecoverStaleFocusInputLock
-        /// is the guard that keeps this off legitimate non-CCTV state: it fires only
-        /// when look+move+interact are ALL asserted while no terminal, quick menu, or
+        /// is the guard that keeps this off legitimate non-CCTV state: it fires when
+        /// look+move+interact are ALL asserted while no terminal, quick menu, or
         /// chat entry explains them, and ClearResidualFocusAnimation runs only from
-        /// inside that guard. A non-CCTV special animation that does not hold all
-        /// three flags (ladder climb, teleporter beam) is therefore left untouched —
-        /// the animation state is never cleared on its own here. Safe when the local
+        /// inside that guard. #1082 added a second branch for a PARTIAL leak (one or
+        /// two flags), which additionally requires that no other owner can explain
+        /// it — see HasOtherInputLockOwner. A non-CCTV special animation (ladder
+        /// climb, teleporter beam) is therefore still left untouched, and the
+        /// animation state is never cleared on its own here. Safe when the local
         /// player never entered focus: the flags are simply not set and nothing runs.
         /// Logged once per (operation:reason) like the ObstructorMask boundary logs.
         /// </summary>
@@ -547,9 +588,29 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (stashedPlayer != null)
             {
                 ClearResidualFocusAnimation(stashedPlayer, "exit-focus-stashed");
-                stashedPlayer.disableLookInput = _priorDisableLook;
-                stashedPlayer.disableMoveInput = _priorDisableMove;
-                stashedPlayer.disableInteract = _priorDisableInteract;
+                // #1082: replay a captured `true` only while its owner is still
+                // live. ClearResidualFocusAnimation above has already dropped OUR
+                // seated special-animation flags, so anything still asserting here
+                // belongs to someone else. Without this test a stash captured
+                // during a transient IsInSpecialAnimationClientRpc collision
+                // re-asserts a lock nobody owns (the 141 s disableMoveInput
+                // episode from the 2026-09-16 playtest). A captured `false` is
+                // unaffected, so the normal enter/leave case is unchanged.
+                bool assertingContextLive = HasBlockingUiInputContext(stashedPlayer)
+                    || HasOtherInputLockOwner(stashedPlayer);
+                bool restoreLook = CctvFocusInputLockPolicy.ShouldRestorePriorLock(_priorDisableLook, assertingContextLive);
+                bool restoreMove = CctvFocusInputLockPolicy.ShouldRestorePriorLock(_priorDisableMove, assertingContextLive);
+                bool restoreInteract = CctvFocusInputLockPolicy.ShouldRestorePriorLock(_priorDisableInteract, assertingContextLive);
+                if (!assertingContextLive && (_priorDisableLook || _priorDisableMove || _priorDisableInteract))
+                {
+                    SurveillanceBootstrap.Log?.LogWarning(
+                        "[LethalCCTV][FocusInputRecovery] dropped stale pre-focus input stash " +
+                        $"(look={_priorDisableLook} move={_priorDisableMove} interact={_priorDisableInteract}): " +
+                        "the asserting owner released during the focus session.");
+                }
+                stashedPlayer.disableLookInput = restoreLook;
+                stashedPlayer.disableMoveInput = restoreMove;
+                stashedPlayer.disableInteract = restoreInteract;
             }
 
             PlayerControllerB local = GameNetworkManager.Instance != null
@@ -735,10 +796,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             ApplyFocusHudDimming(force: true);
             MarkEnterPhase("hud-dim#2.rest");
 
-            // Rising-edge wake render so the overlay opens with fresh content
-            // even when the player entered focus while not looking at the wall
-            // mesh (which means the throttle's visibility gate was holding the
-            // cameras idle). Synchronous one-shot bypasses the throttle entirely.
+            // Rising-edge wake so the overlay opens with fresh content even when the
+            // player entered focus while not looking at the wall mesh (which means the
+            // throttle's visibility gate was holding the cameras idle). The throttle
+            // wakes the bound camera on its next Update; no manual render happens here.
             QuadCameraAssignment.RequestWakeAllSlots();
             MarkEnterPhase("RequestWakeAllSlots");
             MarkEnterPhase("wake-render");
@@ -766,6 +827,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static void TickPendingStationFeedFlip()
         {
             if (!_stationFeedFlipPending) return;
+            // A slow render frame must not let the wall-clock fallback beat the
+            // camera/hand presentation clock to the physical press.
+            if (Y4NGZPlayerAnimationBridge.IsLocalInteractionsApiSessionActive && EnterPresentationClockSeconds >= 0f) return;
             if (Time.unscaledTime < _stationFeedFlipAt) return;
             CompleteStationFeedFlip(playFeedback: true);
         }
@@ -804,6 +868,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void ExitFocus()
         {
+            CctvDeviceCommandLine.Close(clearStatus: true);
             if (!HasFocusCleanupState()) return;
             if (_focusViewExitPending) return;
             if (!_stationThirdPersonDebugPersistent)
@@ -828,6 +893,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void CompleteExitFocusCleanup()
         {
+            CctvDeviceCommandLine.Close(clearStatus: true);
             if (!HasFocusCleanupState()) return;
 
             // An exit before press contact still lands on the synced feed state
@@ -976,6 +1042,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (IsFocused)
             {
                 bool isEscape = context.action == _inputActions?.ExitFocusKeyEscape;
+                if (CctvDeviceCommandLine.ConsumesInput)
+                {
+                    WasActiveThisFrame = true;
+                    _wasActiveSetFrame = Time.frameCount;
+                    if (isEscape) CctvDeviceCommandLine.Close();
+                    return;
+                }
                 // Latch BEFORE ExitFocus mutates IsFocused — order-independent of when
                 // vanilla's OpenMenu_performed handler fires on the same frame.
                 WasActiveThisFrame = true;

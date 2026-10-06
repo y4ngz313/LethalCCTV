@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using DunGen;
@@ -7,12 +6,16 @@ using UnityEngine;
 using Y4NGZCompany.Facility.Cameras.Placement;
 using Y4NGZCompany.ShipSystems.Surveillance;
 using Y4NGZCompany.Facility.Interior.Placement.Authored;
+using Y4NGZCompany.Facility.Interior.Placement;
 using Y4NGZCompany.Bootstrap;
 
 namespace Y4NGZCompany.Facility.Cameras
 {
     public sealed partial class DungeonCameraSpawner
     {
+        // #1283 — one synchronous pass inside the dungeon-finished event (see
+        // OnDungeonFinished). CamerasReady fires exactly once, with the _spawnedCameras
+        // payload, after the last camera and its prop exist.
         private void RunSpawnPipeline()
         {
             ClearPriorRunIfAny();
@@ -60,17 +63,18 @@ namespace Y4NGZCompany.Facility.Cameras
             }
 
             // The per-attribution log lines emitted by BuildEntranceTileSets are the
-            // canonical record of what got attributed where; the standalone global
-            // EntranceTeleport probe used during Phase 1 triage was retired after
-            // the timing-deferred coroutine was verified to wait until dungeon-side
-            // scripts spawned (Factory retest, 2026-05-15).
+            // canonical record of what got attributed where. #1283: the dungeon-side
+            // teleports and the apparatus are network-spawned after this event, so their
+            // pads and positions are read once per pass from the SpawnSyncedObject markers
+            // that spawn them, identically on every peer.
+            CollectSpawnMarkerInputs(s_markerPads, s_markerApparatus);
 
             // Build the entrance and fire-exit tile sets via closest-center-always
             // attribution. The filter consults these instead of walking each tile's
             // subtree for an EntranceTeleport child (which always returned null
             // because EntranceTeleport components live under Environment/Teleports/).
             (HashSet<Tile> entranceTiles, HashSet<Tile> fireExitTiles) =
-                BuildEntranceTileSets(allTiles);
+                BuildEntranceTileSets(allTiles, s_markerPads);
 
             // Phase 1.9 — extended bounds probe (§4.1.1 origin). One-shot
             // per spawner instance: restart the game between rolls if you
@@ -169,16 +173,16 @@ namespace Y4NGZCompany.Facility.Cameras
             // the guarantees therefore rank entrance > apparatus > mainframe > objective
             // > fire exit.
             orderedPicks = ApplyEntrancePromotion(allTiles, orderedPicks);
-            orderedPicks = ApplyApparatusPromotion(allTiles, orderedPicks);
+            orderedPicks = ApplyApparatusPromotion(allTiles, orderedPicks, s_markerApparatus);
             orderedPicks = ApplyMainframePromotion(allTiles, orderedPicks);
             orderedPicks = ApplyObjectivePromotion(allTiles, orderedPicks);
             orderedPicks = ApplyFireExitPromotion(allTiles, orderedPicks, fireExitTiles);
 
-            // Instantiate. Phase 1.9 — bundle the five config-derived
-            // placement floats into PlacementParams (ComputeP2 takes it
-            // by `in` ref). Geometry inputs (tile + tile-local
-            // worldAABB + sortedIndex) stay as their own parameters per
-            // the PLAN rationale.
+            // Instantiate. Phase 1.9 — bundle the config-derived placement
+            // floats into PlacementParams (SurfaceMount.Compute takes it by
+            // `in` ref). Geometry inputs (tile + tile-local worldAABB +
+            // sortedIndex) stay as their own parameters per the PLAN
+            // rationale.
             PlacementParams placementParams = new PlacementParams(
                 heightFraction:            _config.PlacementHeightFraction,
                 horizontalFraction:        _config.PlacementHorizontalFraction,
@@ -207,8 +211,7 @@ namespace Y4NGZCompany.Facility.Cameras
             // redundant with an already-placed camera, is SKIPPED rather than
             // spawned floating or staring at a wall. When the mask is invalid
             // (physics not ready / a moon renamed the collision layers), this
-            // pass spawns no cameras rather than falling back to unsupported
-            // AABB placement. Cross-client determinism: identical builds run
+            // pass spawns no cameras. Cross-client determinism: identical builds run
             // identical raycasts against identical DunGen-seeded static
             // geometry, so the kept-camera set matches on host and client.
             PlacementMasks placementMasks = PlacementMask.Resolve(placementDebugLogging);
@@ -216,8 +219,7 @@ namespace Y4NGZCompany.Facility.Cameras
             {
                 MarkAuthoredCamerasUnused(authoredCameraPoses, "consumer=cctv-camera reason=invalid-placement-mask");
                 SurveillanceBootstrap.Log.LogWarning(
-                    "[LethalCCTV] SURFACE_PLACEMENT_ABORT reason=invalid-placement-mask — " +
-                    "spawned no cameras rather than using the legacy floating-prone AABB path.");
+                    "[LethalCCTV] SURFACE_PLACEMENT_ABORT reason=invalid-placement-mask — spawned no cameras.");
                 SurveillanceBootstrap.Log.LogInfo(
                     $"[LethalCCTV] Spawned {_spawnedCameras.Count} cameras (interior picks={orderedPicks.Count}, skipped {orderedPicks.Count}: invalid placement mask) of {totalTiles} total tiles");
                 SurveillanceBootstrap.Log.LogInfo(
@@ -225,6 +227,17 @@ namespace Y4NGZCompany.Facility.Cameras
                     (other > 0 ? $", {other} other" : string.Empty));
                 CamerasReady?.Invoke(_spawnedCameras);
                 return;
+            }
+
+            CameraPlacementSafety.Prepare(allTiles);
+            foreach (var authored in authoredCameraPoses)
+                CameraPlacementSafety.PrepareFloor(authored.Tile);
+            foreach (CameraPick safetyPick in orderedPicks)
+            {
+                CameraPlacementSafety.PrepareFloor(safetyPick.Tile);
+                if (placementDebugLogging)
+                    SurveillanceBootstrap.Log.LogInfo($"[LethalCCTV][PlacementSafety] tile='{safetyPick.Tile?.name}' " +
+                        CameraPlacementSafety.DescribeFloor(safetyPick.Tile));
             }
 
             var acceptedPoses = new List<AcceptedPose>(orderedPicks.Count);
@@ -235,6 +248,12 @@ namespace Y4NGZCompany.Facility.Cameras
             int expandedFallbackAttempts = 0;
             int expandedFallbackAccepted = 0;
             var occupiedCameraTiles = new HashSet<Tile>();
+            // Per-pick tally of structural-patch rejects (#1313), reset for each
+            // pick, so a tile left without a camera reports why in one line. Only
+            // the strict and expanded (non-relaxed) Compute passes and the
+            // grand-room overview feed it: a relaxed pass re-probes the same hits
+            // with the same patch verdicts, so it would only double the counts.
+            var patchRejects = new StructuralPatchRejectTally();
             for (int i = 0; i < authoredCameraPoses.Count; i++)
             {
                 AuthoredInteriorPlacementPose authored = authoredCameraPoses[i];
@@ -283,7 +302,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 CCTVCamera authoredHolder = InstantiateAtPose(
                     authored.Tile, authoredCameraIndex, authored.WorldPosition, authored.WorldRotation,
                     cornerId: 777, cornerLocal: authored.Record != null ? authored.Record.tileLocalPosition : Vector3.zero,
-                    mountMode: CameraMountMode.Wall, drivingRoomHeightM: authoredBox.size.y);
+                    mountMode: CameraMountMode.Wall, drivingRoomHeightM: authoredBox.size.y, source: "authored");
                 if (authoredHolder == null)
                 {
                     AuthoredPlacementRoundReport.RecordResolvedButUnused(
@@ -299,6 +318,7 @@ namespace Y4NGZCompany.Facility.Cameras
                     authoredHolder,
                     authored.Tile,
                     string.IsNullOrEmpty(authored.Source) ? "authored-camera" : authored.Source);
+                authoredHolder.PlacementTier = "authored";
                 _spawnedCameras.Add(authoredHolder);
                 occupiedCameraTiles.Add(authored.Tile);
                 AuthoredPlacementRoundReport.RecordSpawned(authored.Record);
@@ -333,6 +353,16 @@ namespace Y4NGZCompany.Facility.Cameras
                 {
                     SurveillanceBootstrap.Log.LogInfo(
                         $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} reason=tile-already-has-camera");
+                    continue;
+                }
+                // #874: promotions (apparatus, objective, entrance...) bypass the tile filter,
+                // so the padded-cell exclusion is enforced here for every procedural pick.
+                if (InteriorPlacementService.IsTileExcludedFromPlacement(tile))
+                {
+                    SurveillanceBootstrap.Log.LogInfo(
+                        $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} reason={TileExclusionFilter.ReasonPaddedCell}");
+                    if (promotedPick)
+                        WarnPromotedPickUnmounted(pick, TileExclusionFilter.ReasonPaddedCell);
                     continue;
                 }
                 if (InteriorAuthoredPlacementStore.TryGetCameraTileSuppression(
@@ -371,7 +401,7 @@ namespace Y4NGZCompany.Facility.Cameras
                     semanticFocus);
 
                 if (CameraPlacementReviewStore.TryResolveReviewedPose(
-                        tile, placementMasks, out ReviewedCameraPose reviewedPose, out string reviewedRejectReason))
+                        tile, placementMasks, box, out ReviewedCameraPose reviewedPose, out string reviewedRejectReason))
                 {
                     Vector3 reviewedForward = reviewedPose.WorldRotation * Vector3.forward;
                     string reviewedRedundantReason = null;
@@ -382,7 +412,7 @@ namespace Y4NGZCompany.Facility.Cameras
                         CCTVCamera reviewedHolder = InstantiateAtPose(
                             tile, reviewedCameraIndex, reviewedPose.WorldPosition, reviewedPose.WorldRotation,
                             reviewedPose.Record.placementCornerId, reviewedPose.Record.tileLocalPosition,
-                            ParseMountMode(reviewedPose.Record.mountMode), reviewedPose.Record.tileBoundsSize.y);
+                            ParseMountMode(reviewedPose.Record.mountMode), reviewedPose.Record.tileBoundsSize.y, source: "reviewed-perfect");
                         if (reviewedHolder != null)
                         {
                             CameraPlacementReviewStore.ApplyReviewedDiagnostics(reviewedHolder, reviewedPose);
@@ -416,18 +446,22 @@ namespace Y4NGZCompany.Facility.Cameras
                         $"[LethalCCTV] REVIEWED_POSE_REJECT tile={sortedIndex} name={tile?.name} reason={reviewedRejectReason}");
                 }
 
+                patchRejects.Reset();
                 List<SurfaceMount.Candidate> candidates = null;
                 bool usingExpandedFallback = false;
+                // Which Compute pass produced the candidate list (#1313 diagnostics).
+                string candidateTier = "strict";
                 if (box.size.sqrMagnitude >= 1e-6f)
                 {
                     candidates = SurfaceMount.Compute(
                         tile, box, sortedIndex, in placementParams, in placementMasks, in semantic,
-                        relaxed: false, debug: placementDebugLogging);
+                        relaxed: false, debug: placementDebugLogging, patchRejects);
                     if (candidates.Count == 0)
                     {
                         // Relaxed pass — allow a shorter useful center distance
                         // ("unless no alternative exists"), while still hard-
                         // gating surface support, embedding, and skybox/void.
+                        candidateTier = "relaxed";
                         candidates = SurfaceMount.Compute(
                             tile, box, sortedIndex, in placementParams, in placementMasks, in semantic,
                             relaxed: true, debug: placementDebugLogging);
@@ -436,11 +470,13 @@ namespace Y4NGZCompany.Facility.Cameras
                     {
                         expandedFallbackAttempts++;
                         usingExpandedFallback = true;
+                        candidateTier = "expanded";
                         candidates = SurfaceMount.Compute(
                             tile, box, sortedIndex, in placementParams, in expandedPlacementMasks, in semantic,
-                            relaxed: false, debug: placementDebugLogging);
+                            relaxed: false, debug: placementDebugLogging, patchRejects);
                         if (candidates.Count == 0)
                         {
+                            candidateTier = "expanded-relaxed";
                             candidates = SurfaceMount.Compute(
                                 tile, box, sortedIndex, in placementParams, in expandedPlacementMasks, in semantic,
                                 relaxed: true, debug: placementDebugLogging);
@@ -448,14 +484,16 @@ namespace Y4NGZCompany.Facility.Cameras
                     }
                 }
 
+                int grandRoomIndex = -1;
                 if (box.size.sqrMagnitude >= 1e-6f &&
                     SurfaceMount.TryComputeGrandRoomOverview(
                         tile, box, sortedIndex, in placementMasks,
-                        placementDebugLogging, out SurfaceMount.Candidate grandRoomCandidate))
+                        placementDebugLogging, patchRejects, out SurfaceMount.Candidate grandRoomCandidate))
                 {
                     if (candidates == null)
                         candidates = new List<SurfaceMount.Candidate>(1);
                     candidates.Insert(0, grandRoomCandidate);
+                    grandRoomIndex = 0;
                     if (placementDebugLogging || reconLogging)
                     {
                         SurveillanceBootstrap.Log.LogInfo(
@@ -473,9 +511,10 @@ namespace Y4NGZCompany.Facility.Cameras
                 string lastRedundantReason = null;
                 bool sawReviewRejected = false;
                 string lastReviewRejectReason = null;
+                string chosenTier = candidateTier;
                 if (candidates != null)
                 {
-                    SurfaceMount.Candidate bestAdjusted = default;
+                    int bestAdjustedIndex = -1;
                     float bestAdjustedScore = float.NegativeInfinity;
                     for (int ci = 0; ci < candidates.Count; ci++)
                     {
@@ -499,7 +538,7 @@ namespace Y4NGZCompany.Facility.Cameras
                                 tile, candidates[ci], usingExpandedFallback);
                             if (adjustedScore > bestAdjustedScore)
                             {
-                                bestAdjusted = candidates[ci];
+                                bestAdjustedIndex = ci;
                                 bestAdjustedScore = adjustedScore;
                             }
                             haveChoice = true;
@@ -510,7 +549,9 @@ namespace Y4NGZCompany.Facility.Cameras
 
                     if (haveChoice)
                     {
-                        chosen = bestAdjusted;
+                        chosen = candidates[bestAdjustedIndex];
+                        if (bestAdjustedIndex == grandRoomIndex)
+                            chosenTier = "grand-room";
                     }
                 }
 
@@ -518,77 +559,14 @@ namespace Y4NGZCompany.Facility.Cameras
                 {
                     if (candidates == null || candidates.Count == 0)
                     {
-                        if (CameraPlacementReviewStore.ShouldAvoidLegacyFallback(tile))
-                        {
-                            skippedNoCandidate++;
-                            SurveillanceBootstrap.Log.LogInfo(
-                                $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} reason=legacy-fallback-disabled-by-review");
-                            if (promotedPick)
-                                WarnPromotedPickUnmounted(pick, "legacy-fallback-disabled-by-review");
-                            continue;
-                        }
-
-                        // Legacy AABB fallback is now gated by the same hard
-                        // safety checks as surface candidates. Try the original
-                        // deterministic corner, then the remaining corner variants;
-                        // if none survive, skip instead of spawning an unsafe camera.
-                        if (!TryComputeSafeLegacyFallback(
-                                tile, box, sortedIndex, in placementParams, in placementMasks,
-                                placementDebugLogging, out LegacyFallbackPose fallback))
-                        {
-                            skippedNoCandidate++;
-                            SurveillanceBootstrap.Log.LogInfo(
-                                $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} reason=fallback-failed-safety-gates");
-                            if (promotedPick)
-                                WarnPromotedPickUnmounted(pick, "fallback-failed-safety-gates");
-                            continue;
-                        }
-
-                        // The fallback pose skips candidate ranking, so it must
-                        // still honor the hard spacing floor against cameras
-                        // already accepted this round.
-                        if (!promotedPick && IsFallbackTooClose(fallback.WorldPos, acceptedPoses, pick, out string spacingReason))
-                        {
-                            skippedRedundant++;
-                            SurveillanceBootstrap.Log.LogInfo(
-                                $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} reason=fallback-min-separation {spacingReason}");
-                            continue;
-                        }
-
-                        int fallbackCameraIndex = _spawnedCameras.Count;
-                        CCTVCamera fallbackHolder = InstantiateAtPose(
-                            tile, fallbackCameraIndex, fallback.WorldPos, fallback.WorldRot,
-                            fallback.CornerId, fallback.CornerLocal, fallback.MountMode, fallback.DrivingRoomHeightM);
-                        if (fallbackHolder == null)
-                        {
-                            skippedNoCandidate++;
-                            SurveillanceBootstrap.Log.LogWarning(
-                                $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} " +
-                                "reason=fixture-reservation-conflict source=legacy-fallback");
-                            if (promotedPick)
-                                WarnPromotedPickUnmounted(pick, "fixture-reservation-conflict");
-                            continue;
-                        }
-
-                        fallbackHolder.PlacementSource = "legacy-fallback";
-                        fallbackHolder.PlacementSurfaceKind = "aabb";
-                        fallbackHolder.PlacementScore = -100f;
-                        fallbackHolder.PlacementHeightAboveFloorM = fallback.Gate.MountHeightAboveFloorM;
-                        fallbackHolder.PlacementCenterSightDistanceM = fallback.Gate.CenterUsefulDistM;
-                        fallbackHolder.PlacementFrustumHits = fallback.Gate.FrustumHits;
-                        fallbackHolder.PlacementFrustumVoids = fallback.Gate.FrustumVoids;
-                        fallbackHolder.PlacementFrustumNearWall = fallback.Gate.FrustumNearWall;
-                        fallbackHolder.PlacementDoorwayVisibilityScore = 0f;
-                        fallbackHolder.PlacementRoomFramingScore = 0f;
-                        fallbackHolder.PlacementAimProfile = "legacy-fallback";
-                        _spawnedCameras.Add(fallbackHolder);
-                        occupiedCameraTiles.Add(tile);
-                        acceptedPoses.Add(new AcceptedPose(fallback.WorldPos, fallback.Gate.Forward, tile, pick.Component));
-
+                        // #1313: no flat structural wall or ceiling survived, so
+                        // this tile gets no camera — there is no synthesized pose.
+                        skippedNoCandidate++;
                         SurveillanceBootstrap.Log.LogInfo(
-                            $"[LethalCCTV] SURFACE_FALLBACK_ACCEPT cam={fallbackCameraIndex} tile={sortedIndex} name={tile?.name} " +
-                            $"mount={fallback.MountMode} pos=({fallback.WorldPos.x:F2},{fallback.WorldPos.y:F2},{fallback.WorldPos.z:F2})");
-                        continue;
+                            $"[LethalCCTV] SURFACE_SKIP tile={sortedIndex} name={tile?.name} reason=no-structural-candidate " +
+                            $"patchRejects={patchRejects.Format()}");
+                        if (promotedPick)
+                            WarnPromotedPickUnmounted(pick, "no-structural-candidate");
                     }
                     else
                     {
@@ -615,7 +593,8 @@ namespace Y4NGZCompany.Facility.Cameras
                 int cameraIndex = _spawnedCameras.Count;
                 CCTVCamera holder = InstantiateAtPose(
                     tile, cameraIndex, chosen.WorldPos, chosen.WorldRot,
-                    chosen.CornerId, chosen.CornerLocal, chosen.MountMode, chosen.RoomHeightM);
+                    chosen.CornerId, chosen.CornerLocal, chosen.MountMode, chosen.RoomHeightM,
+                    source: "procedural/" + pick.Reason);
                 if (holder == null)
                 {
                     skippedNoCandidate++;
@@ -628,7 +607,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 }
 
                 CameraPlacementReviewStore.ApplyCandidateDiagnostics(
-                    holder, chosen, usingExpandedFallback ? "expanded" : "strict");
+                    holder, chosen, usingExpandedFallback ? "expanded" : "strict", chosenTier);
                 _spawnedCameras.Add(holder);
                 occupiedCameraTiles.Add(tile);
                 acceptedPoses.Add(new AcceptedPose(chosen.WorldPos, chosen.Forward, tile, pick.Component));
@@ -638,7 +617,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 {
                     SurveillanceBootstrap.Log.LogInfo(
                         $"[LethalCCTV] SURFACE_ACCEPT cam={cameraIndex} tile={sortedIndex} name={tile?.name} " +
-                        $"source={(usingExpandedFallback ? "expanded" : "strict")} " +
+                        $"source={(usingExpandedFallback ? "expanded" : "strict")} tier={chosenTier} " +
                         $"kind={chosen.Kind} mount={chosen.MountMode} score={chosen.Score:F1} " +
                         $"heightAboveFloor={chosen.MountHeightAboveFloorM:F2} centerDist={chosen.CenterUsefulDistM:F2} " +
                         $"frustum(hit/void/near)={chosen.FrustumHits}/{chosen.FrustumVoids}/{chosen.FrustumNearWall} " +
@@ -646,6 +625,14 @@ namespace Y4NGZCompany.Facility.Cameras
                         $"hit={chosen.HitName} layer={chosen.HitLayer} " +
                         $"pos=({chosen.WorldPos.x:F2},{chosen.WorldPos.y:F2},{chosen.WorldPos.z:F2})");
                 }
+            }
+
+            // #1271: every prop is built here, inside the pass, rather
+            // than in each CCTVCameraVisual.LateUpdate after it (LateUpdate stays the retry
+            // path). Placement above is finished, so no prop can reach a placement query.
+            for (int i = 0; i < _spawnedCameras.Count; i++)
+            {
+                CCTVCameraVisual.BuildNow(_spawnedCameras[i]);
             }
 
             int skippedTotal = skippedNoCandidate + skippedRedundant;
@@ -832,21 +819,21 @@ namespace Y4NGZCompany.Facility.Cameras
 
         private static int QuantizeDm(float v) => (int)Mathf.Round(v * 10f);
 
-        // Build the entrance-tile and fire-exit-tile sets via global sweep +
-        // closest-center attribution. Algorithm per 01_phase1_filter_rewrite.md:
-        //   - Global FindObjectsByType<EntranceTeleport>(Include).
-        //   - Skip ship-side scripts (isEntranceToBuilding == true) and null
-        //     entrancePoint.
-        //   - For each remaining (dungeon-side) script, find the tile whose
-        //     Placement.Bounds.center is closest to entrancePoint.position
-        //     (deterministic across runs).
+        // Build the entrance-tile and fire-exit-tile sets via closest-center
+        // attribution. Algorithm per 01_phase1_filter_rewrite.md:
+        //   - #1283: the dungeon-side pads come from the SpawnSyncedObject markers
+        //     (CollectSpawnMarkerInputs), which already skips ship-side scripts
+        //     (isEntranceToBuilding == true) and null entrancePoints.
+        //   - For each pad, find the tile whose Placement.Bounds.center is
+        //     closest to it (deterministic across runs).
         //   - Bounds.Contains is a sanity check only — if the closest tile's
         //     bounds don't contain the pad, log a warning (orphaned teleport)
         //     and skip attribution rather than attribute to a near-miss tile.
-        //   - entranceId == 0 → entrance set; > 0 → fire-exit set. The
+        //   - entranceId == 0 → entrance set; otherwise fire-exit set. The
         //     discriminator literal is Cecil-verified against
         //     RoundManager.FindMainEntranceScript IL.
-        private (HashSet<Tile> entrance, HashSet<Tile> fireExit) BuildEntranceTileSets(IReadOnlyList<Tile> allTiles)
+        private (HashSet<Tile> entrance, HashSet<Tile> fireExit) BuildEntranceTileSets(
+            IReadOnlyList<Tile> allTiles, IReadOnlyList<DungeonEntrancePad> pads)
         {
             var entrance = new HashSet<Tile>();
             var fireExit = new HashSet<Tile>();
@@ -856,23 +843,19 @@ namespace Y4NGZCompany.Facility.Cameras
             bool reconLogging = _config.ReconLoggingEnabled.Value;
             bool placementDebugLogging = _config.PlacementDebugLoggingEnabled.Value;
 
-            EntranceTeleport[] all = UnityEngine.Object.FindObjectsByType<EntranceTeleport>(
-                FindObjectsInactive.Include, FindObjectsSortMode.None);
             int attributedEntrance = 0;
             int attributedFireExit = 0;
-            int skippedShipSide = 0;
-            int skippedNullPad = 0;
             int skippedOrphan = 0;
+            int mainEntranceSrcIndex = -1;
 
-            for (int i = 0; i < all.Length; i++)
+            for (int i = 0; i < pads.Count; i++)
             {
-                EntranceTeleport et = all[i];
-                if (et.isEntranceToBuilding) { skippedShipSide++; continue; }
-                if (et.entrancePoint == null) { skippedNullPad++; continue; }
-
-                Vector3 padWorld = et.entrancePoint.position;
+                DungeonEntrancePad pad = pads[i];
+                Vector3 padWorld = pad.PadWorld;
+                string kind = pad.IsMain ? "entrance" : "fire-exit";
 
                 Tile closestTile = null;
+                int closestIndex = -1;
                 float closestSqr = float.PositiveInfinity;
                 for (int j = 0; j < allTiles.Count; j++)
                 {
@@ -883,6 +866,7 @@ namespace Y4NGZCompany.Facility.Cameras
                     {
                         closestSqr = sqr;
                         closestTile = t;
+                        closestIndex = j;
                     }
                 }
                 if (closestTile == null) continue;
@@ -892,7 +876,7 @@ namespace Y4NGZCompany.Facility.Cameras
                     if (placementDebugLogging)
                     {
                         SurveillanceBootstrap.Log.LogWarning(
-                            $"[LethalCCTV] EntranceTeleport entranceId={et.entranceId} at " +
+                            $"[LethalCCTV] EntranceTeleport {kind} pad at " +
                             $"({padWorld.x:F2},{padWorld.y:F2},{padWorld.z:F2}) is outside closest tile " +
                             $"{closestTile.name} bounds; skipping attribution");
                     }
@@ -900,18 +884,30 @@ namespace Y4NGZCompany.Facility.Cameras
                     continue;
                 }
 
-                if (et.entranceId == 0)
+                if (pad.IsMain)
                 {
                     entrance.Add(closestTile);
                     attributedEntrance++;
                     // Remember the MAIN entrance for the promotion pass and
                     // the focus-target aim: the camera in this tile must
-                    // watch the entrance door itself.
-                    if (_mainEntranceTile == null)
+                    // watch the entrance door itself. #1283: marker order is
+                    // undefined, so a second main pad (none in vanilla) never
+                    // wins by order: the lowest AllTiles index wins, then the
+                    // lowest quantized position (x, z, y).
+                    bool better = _mainEntranceTile == null || closestIndex < mainEntranceSrcIndex;
+                    if (!better && closestIndex == mainEntranceSrcIndex)
+                    {
+                        int cmp = QuantizeDm(padWorld.x).CompareTo(QuantizeDm(_mainEntrancePadWorld.x));
+                        if (cmp == 0) cmp = QuantizeDm(padWorld.z).CompareTo(QuantizeDm(_mainEntrancePadWorld.z));
+                        if (cmp == 0) cmp = QuantizeDm(padWorld.y).CompareTo(QuantizeDm(_mainEntrancePadWorld.y));
+                        better = cmp < 0;
+                    }
+                    if (better)
                     {
                         _mainEntranceTile = closestTile;
                         _mainEntrancePadWorld = padWorld;
                         _hasMainEntrancePad = true;
+                        mainEntranceSrcIndex = closestIndex;
                     }
                 }
                 else
@@ -922,9 +918,8 @@ namespace Y4NGZCompany.Facility.Cameras
 
                 if (reconLogging)
                 {
-                    string kind = et.entranceId == 0 ? "entrance" : "fire-exit";
                     SurveillanceBootstrap.Log.LogInfo(
-                        $"[LethalCCTV] Attributed {kind} (entranceId={et.entranceId}) to tile " +
+                        $"[LethalCCTV] Attributed {kind} to tile " +
                         $"{closestTile.name} via pad at ({padWorld.x:F2},{padWorld.y:F2},{padWorld.z:F2})");
                 }
             }
@@ -933,7 +928,7 @@ namespace Y4NGZCompany.Facility.Cameras
             {
                 SurveillanceBootstrap.Log.LogInfo(
                     $"[LethalCCTV] Entrance attribution: {attributedEntrance} entrance, {attributedFireExit} fire-exit; " +
-                    $"skipped {skippedShipSide} ship-side, {skippedNullPad} null-pad, {skippedOrphan} orphan (of {all.Length} total teleports).");
+                    $"skipped {skippedOrphan} orphan (of {pads.Count} marker pads).");
             }
 
             return (entrance, fireExit);

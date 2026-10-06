@@ -8,42 +8,48 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private void BindSecurityAndTracking(ConfigFile cfg)
         {
+            AllCamerasPassive = cfg.BindSyncedEntry(
+                new ConfigDefinition(CctvModuleConfig.SecuritySystemsSection, "All Cameras Passive"),
+                false,
+                new ConfigDescription(
+                    "When on, every camera stays passive on every moon: none watches for players and no camera alarm can go off, though the cameras still show on the ship monitor. Off by default. Host decides."));
+
             BreakableCameras = cfg.BindSyncedEntry(
-                new ConfigDefinition(CctvModuleConfig.SecuritySharedSection, "Breakable Cameras"),
+                new ConfigDefinition(CctvModuleConfig.SecuritySystemsSection, "Breakable Cameras"),
                 true,
                 new ConfigDescription(
-                    "When true, physical CCTV cameras can be damaged and broken by melee, vanilla shotguns, and supported Y4NGZ weapons. Host authoritative and synced to every client."));
+                    "When on, cameras inside the building can be damaged and broken by melee hits, the shotgun and supported Y4NGZ weapons. On by default. Host decides."));
 
             CameraHealth = cfg.BindSyncedEntry(
-                new ConfigDefinition(CctvModuleConfig.SecuritySharedSection, "Camera Health"),
+                new ConfigDefinition(CctvModuleConfig.SecuritySystemsSection, "Camera Health"),
                 6f,
                 new ConfigDescription(
-                    "Damage threshold before a physical CCTV camera breaks. A shovel swing deals 1; firearms use their own enemy-force falloff. Host authoritative and synced to every client.",
+                    "How much damage a camera takes before it breaks; a shovel swing deals 1, so at the default of 6 it takes six swings. Guns deal their own amount of damage. Host decides.",
                     new AcceptableValueRange<float>(1f, 10f)));
 
             AlarmLockdownGates = cfg.BindSyncedEntry(
-                new ConfigDefinition(CctvModuleConfig.SecurityAlarmsSection, "Close Lockdown Gates During Alarms"),
+                new ConfigDefinition(CctvModuleConfig.SecuritySystemsSection, "Close Lockdown Gates During Alarms"),
                 true,
                 new ConfigDescription(
-                    "When true, CCTV security alarms close physical gates over facility entrances and fire exits for the alarm duration. LethalCCTV supplies the gates in standalone installs and shares Contracted's gates when available. Host authoritative and synced to every client."));
+                    "When on, a security alarm closes gates over the main entrance and fire exits for as long as the alarm lasts. On by default; the mod brings its own gates, or uses Contracted's gates when that mod is installed. Host decides."));
 
             ShowMainEntranceTrackingBox = cfg.BindSyncedEntry(
-                new ConfigDefinition(TrackingBoxesSection, "Show Main Entrance Tracking Box"),
+                new ConfigDefinition(ShipMonitorSection, "Show Main Entrance Tracking Box"),
                 true,
                 new ConfigDescription(
-                    "When true, CCTV feeds draw an objective tracking box around the main entrance. Host authoritative and synced to every client."));
+                    "When on, camera feeds draw a tracking box around the main entrance. On by default. Host decides."));
 
             ShowFireExitTrackingBoxes = cfg.BindSyncedEntry(
-                new ConfigDefinition(TrackingBoxesSection, "Show Fire Exit Tracking Boxes"),
+                new ConfigDefinition(ShipMonitorSection, "Show Fire Exit Tracking Boxes"),
                 true,
                 new ConfigDescription(
-                    "When true, CCTV feeds draw objective tracking boxes around fire exits. Host authoritative and synced to every client."));
+                    "When on, camera feeds draw a tracking box around each fire exit. On by default. Host decides."));
 
             ShowApparatusTrackingBox = cfg.BindSyncedEntry(
-                new ConfigDefinition(TrackingBoxesSection, "Show Apparatus Tracking Box"),
+                new ConfigDefinition(ShipMonitorSection, "Show Apparatus Tracking Box"),
                 true,
                 new ConfigDescription(
-                    "When true, CCTV feeds draw an objective tracking box around the facility apparatus while it exists. Host authoritative and synced to every client."));
+                    "When on, camera feeds draw a tracking box around the building's apparatus for as long as it exists. On by default. Host decides."));
         }
     }
 }

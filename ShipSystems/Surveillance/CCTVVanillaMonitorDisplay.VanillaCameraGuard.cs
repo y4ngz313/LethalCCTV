@@ -24,6 +24,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static long _headMountedGuardDisables;
         private static long _mapCameraGuardDisables;
         private static bool _headMountedGuardLogged;
+        private static bool _headMountedGuardDisabled;
         private static bool _mapScreenUnfreezeLogged;
 
         private static void TickVanillaCameraGuard(float now)
@@ -43,21 +44,33 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         }
 
         /// <summary>
-        /// #303 — the vanilla 'HeadMountedCamera' body-cam rig starts rendering every
-        /// frame (~3.3ms) at the first CCTV feed bind and never stops. With
-        /// OpenBodyCams installed, OBC owns body-cam rendering and the LGU rule is
-        /// that the integration stays inert until the CCTV Terminal is purchased —
-        /// the vanilla rig has no visible consumer in this pack, so it is forced off
-        /// whenever the terminal is unowned or CCTV owns the monitor wall.
+        /// #303 / #1139 — the vanilla 'HeadMountedCamera' body-cam rig starts rendering
+        /// every frame (~3 ms) as soon as OpenBodyCams is loaded and the CCTV Terminal
+        /// is purchased, and stays on regardless of whether anything actually displays
+        /// its output. The only visible consumers are the vanilla right-monitor
+        /// headMountedCamUI RawImage and OBC's active bodycam focus slot. When neither
+        /// is consuming the output the camera is forced off so it stops costing the
+        /// render budget.
         /// </summary>
         private static void GuardVanillaHeadMountedCamera(float now)
         {
-            if (!OpenBodyCamsCompat.IsLoaded)
-                return;
-            bool mustStayOff = _suppressionCaptured || !OpenBodyCamsCompat.ShouldShowFocusSlot();
-            if (!mustStayOff)
-                return;
+            bool hasConsumer = OpenBodyCamsCompat.HasVisibleConsumer();
 
+            if (hasConsumer)
+            {
+                // Re-enable the camera if the guard previously disabled it. A
+                // destroyed instance (scene rebuild) was never disabled by us;
+                // the replacement starts in vanilla's state, so just drop the flag.
+                if (_headMountedGuardDisabled)
+                {
+                    if (_vanillaHeadMountedCamera != null)
+                        _vanillaHeadMountedCamera.enabled = true;
+                    _headMountedGuardDisabled = false;
+                }
+                return;
+            }
+
+            // No visible consumer: locate and disable the camera.
             if (_vanillaHeadMountedCamera == null)
             {
                 if (now < _nextHeadMountedLookupAt)
@@ -79,13 +92,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
 
             _vanillaHeadMountedCamera.enabled = false;
+            _headMountedGuardDisabled = true;
             _headMountedGuardDisables++;
             if (!_headMountedGuardLogged)
             {
                 _headMountedGuardLogged = true;
                 SurveillanceBootstrap.Log?.LogWarning(
                     "[LethalCCTV] Vanilla-camera guard disabled the always-on vanilla HeadMountedCamera " +
-                    "(CCTV Terminal unpurchased or CCTV owns the monitors; y4ngz313/Y4NGZCompany#303).");
+                    "(no visible consumer; y4ngz313/Y4NGZCompany#303, #1139).");
             }
         }
 

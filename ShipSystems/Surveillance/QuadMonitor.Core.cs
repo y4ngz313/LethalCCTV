@@ -73,12 +73,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const float LABEL_BOX_HEIGHT_M = 0.035f;
 
         internal static RenderTexture[] QuadRTs { get; private set; }
-        // Phase 1.7b — per-slot RAW RTs that the CCTV cameras render INTO. Non-null
-        // iff the night-vision shader bundle loaded (NightVisionBaker.IsActive at
-        // Spawn time). When non-null, cameras target RawRTs[i] and the bake handler
-        // blits through the night-vision material into QuadRTs[i]. When null, the
-        // bundle is missing and cameras target QuadRTs[i] directly (raw passthrough,
-        // wall + overlay show unfiltered feed — graceful fallback).
+        // Cameras always render into a separate source target. NightVisionBaker
+        // copies or filters it into QuadRTs before compositing the overlay, so
+        // HDRP's final source write cannot overwrite the displayed outline.
         internal static RenderTexture[] RawRTs { get; private set; }
         internal static GameObject MonitorRoot { get; private set; }
         internal static Material[] QuadMaterials { get; private set; }

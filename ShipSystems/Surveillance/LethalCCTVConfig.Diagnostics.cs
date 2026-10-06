@@ -16,13 +16,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 DiagnosticsSection,
                 "Recon Logging Enabled",
                 false,
-                "Enables the once-per-session BepInEx log dump of MonitorWall materials, mapScreen prefab values, ship camera prefabs, diageticMixer groups, and OpenBodyCams routing state. Also gates per-camera, per-tile, and per-monitor debug logs added by later phases. Local entry; not synced.");
+                "When on, writes a one-time report to the log at the start of a session about what the mod found (the ship monitor, the map screen, the ship cameras, the sound setup and whether OpenBodyCams is sending a feed) and adds extra logging for cameras, rooms and monitors. Off by default; leave it off for normal play. Your own setting.");
 
             PlacementDebugLoggingEnabled = cfg.Bind(
                 DiagnosticsSection,
                 "Placement Debug Logging Enabled",
                 false,
-                "Enables verbose CCTV placement/classification reports during dungeon generation. Dev-only; leave false for normal play. Purely a logging switch — it never changes what gets spawned.");
+                "When on, writes detailed reports to the log about how rooms were sorted and where cameras went whenever a building is generated. Off by default; it only adds logging and never changes where cameras are placed. Your own setting.");
+
+            PerformanceTimingLogging = cfg.Bind(
+                DiagnosticsSection,
+                "Performance Timing Logging",
+                false,
+                "When on, the mod reports even small delays in its own per-frame work as log warnings, which helps when looking into stutter. Off by default: then only work that takes longer than a whole frame is noted quietly, though extremely slow work is always reported. Your own setting.");
         }
 
         private void BindLegibilityProbe(ConfigFile cfg)
@@ -42,7 +48,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 DiagnosticsSection,
                 "Enable Placement Probe",
                 false,
-                "Diagnostic. When true, after the cluster→select→cap pipeline picks tiles, a per-tile sightline probe runs: for each picked tile it emits 4 corners × 2 height tiers × N doorways = 8N CAND lines per tile, plus a fail-loud Room-layer assertion at the start and a unified-rule entrance-pick preview at the end. Linecasts run on the 'Room' layer. Pure read — does not alter placement. Per-client, not synced. Default false (dev-only).");
+                "Developer tool: when on, once cameras have picked their rooms, every chosen room is tested for lines of sight and each possible mounting spot is written to the log, which makes the log long. Off by default; it never changes where cameras are placed. Your own setting.");
         }
     }
 }

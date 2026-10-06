@@ -14,6 +14,25 @@ namespace Y4NGZCompany.Facility.Cameras
 {
     internal sealed partial class CCTVCameraVisual
     {
+        // #716 (audit A6) — Shader.Find is a string lookup through the whole
+        // loaded shader set and used to run once per material chain, per
+        // material slot, per camera. The result is process-stable, so each
+        // chain resolves once and is then reused. Unity can null out a Shader
+        // reference across a domain reload, so every accessor re-checks.
+        private static Shader s_importedShader;
+        private static Shader s_litShader;
+        private static Shader s_unlitShader;
+
+        // #716 — the runtime replacement for a bundled material is a pure
+        // function of (source material, lens slot): every colour/texture value
+        // is read off the source, nothing per-camera is written afterwards, and
+        // per-camera state (the lens blink) goes through a MaterialPropertyBlock
+        // in CCTVCameraLensBlinker rather than the material. So one shared
+        // material per distinct source is correct, and it collapses N cameras ×
+        // M slots material allocations down to M.
+        private static readonly Dictionary<int, Material> s_importedMaterialCache =
+            new Dictionary<int, Material>();
+
         private static void RepairImportedMaterials(GameObject instance)
         {
             if (instance == null) return;
@@ -37,9 +56,21 @@ namespace Y4NGZCompany.Facility.Cameras
 
         private static Material CreateRuntimeImportedMaterial(Material source, bool lens)
         {
+            // Key on the source material identity plus the lens flag; the same
+            // source can legitimately resolve to a lens and a non-lens variant.
+            int key = (source != null ? source.GetInstanceID() : 0) * 2 + (lens ? 1 : 0);
+            if (s_importedMaterialCache.TryGetValue(key, out Material cached))
+            {
+                if (cached != null)
+                    return cached;
+                s_importedMaterialCache.Remove(key);
+            }
+
             Color fallback = lens ? new Color(0.03f, 0.01f, 0.01f, 1f) : new Color(0.38f, 0.40f, 0.42f, 1f);
             Color color = lens ? fallback : ReadMaterialColor(source, fallback);
-            Shader shader = FindFirstSupportedShader("HDRP/Lit", "Standard", "Unlit/Texture", "Sprites/Default");
+            Shader shader = s_importedShader != null
+                ? s_importedShader
+                : (s_importedShader = FindFirstSupportedShader("HDRP/Lit", "Standard", "Unlit/Texture", "Sprites/Default"));
             Material material = new Material(shader) { name = $"{source?.name ?? "Camera"}_Runtime" };
             Texture texture = lens ? null : ReadMaterialTexture(source);
             if (texture != null)
@@ -55,6 +86,35 @@ namespace Y4NGZCompany.Facility.Cameras
             SetColorIfPresent(material, "_UnlitColor", color);
             SetFloatIfPresent(material, "_Metallic", 0f);
             SetFloatIfPresent(material, "_Smoothness", lens ? 0.65f : 0.22f);
+            if (!lens && source != null && (shader.name == "HDRP/Lit" || shader.name == "Standard"))
+            {
+                bool hdrp = shader.name == "HDRP/Lit";
+                Texture normal = source.HasProperty("_BumpMap") ? source.GetTexture("_BumpMap") : null;
+                if (normal != null)
+                {
+                    SetTextureIfPresent(material, hdrp ? "_NormalMap" : "_BumpMap", normal);
+                    material.EnableKeyword("_NORMALMAP");
+                    SetFloatIfPresent(material, hdrp ? "_NormalScale" : "_BumpScale",
+                        hdrp || !source.HasProperty("_BumpScale") ? 1f : source.GetFloat("_BumpScale"));
+                }
+
+                Texture mask = source.HasProperty("_MetallicGlossMap") ? source.GetTexture("_MetallicGlossMap") : null;
+                if (mask != null)
+                {
+                    SetTextureIfPresent(material, hdrp ? "_MaskMap" : "_MetallicGlossMap", mask);
+                    material.EnableKeyword(hdrp ? "_MASKMAP" : "_METALLICGLOSSMAP");
+                    if (hdrp)
+                    {
+                        SetFloatIfPresent(material, "_Metallic", 1f);
+                        SetFloatIfPresent(material, "_Smoothness", 1f);
+                    }
+                    else if (source.HasProperty("_GlossMapScale"))
+                    {
+                        SetFloatIfPresent(material, "_GlossMapScale", source.GetFloat("_GlossMapScale"));
+                    }
+                }
+            }
+            s_importedMaterialCache[key] = material;
             return material;
         }
 
@@ -95,30 +155,6 @@ namespace Y4NGZCompany.Facility.Cameras
             return ContainsAny(BuildDescriptor(renderer), "lens", "glass");
         }
 
-        private static bool TryFindBundledHeadBounds(GameObject instance, out Bounds bounds)
-        {
-            bounds = default;
-            bool found = false;
-            if (instance == null) return false;
-
-            Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(true);
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null || !renderer.enabled) continue;
-                if (!found)
-                {
-                    bounds = renderer.bounds;
-                    found = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(renderer.bounds);
-                }
-            }
-
-            return found && bounds.size.sqrMagnitude > 0.0001f;
-        }
 
         private static Shader FindFirstSupportedShader(params string[] names)
         {
@@ -149,9 +185,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 Object.Destroy(_visualRoot);
                 _visualRoot = null;
                 _aimPivot = null;
-                _aimPivotPositionLocked = false;
-                _neutralAimForward = Vector3.zero;
-                _neutralPivotRotation = Quaternion.identity;
+                _bundledYoke = null;
                 _bundledRotatingHead = null;
                 if (_holder != null)
                     s_rotatingHeadsByHolder.Remove(_holder);
@@ -182,10 +216,22 @@ namespace Y4NGZCompany.Facility.Cameras
 
         private static Material CreateMaterial(string name, Color color, bool emissive)
         {
-            Shader shader = Shader.Find(emissive ? "HDRP/Unlit" : "HDRP/Lit")
-                            ?? Shader.Find("HDRP/Unlit")
-                            ?? Shader.Find("Unlit/Color")
-                            ?? Shader.Find("Standard");
+            // Resolved once per process per chain (#716). The emissive chain is
+            // HDRP/Unlit-first and the opaque chain HDRP/Lit-first; both fall
+            // back through the same tail, so two cached fields cover them.
+            Shader shader;
+            if (emissive)
+            {
+                if (s_unlitShader == null)
+                    s_unlitShader = FindFirstSupportedShader("HDRP/Unlit", "Unlit/Color", "Standard");
+                shader = s_unlitShader;
+            }
+            else
+            {
+                if (s_litShader == null)
+                    s_litShader = FindFirstSupportedShader("HDRP/Lit", "HDRP/Unlit", "Unlit/Color", "Standard");
+                shader = s_litShader;
+            }
             Material material = new Material(shader) { name = name, color = color };
             SetColorIfPresent(material, "_BaseColor", color);
             SetColorIfPresent(material, "_UnlitColor", color);

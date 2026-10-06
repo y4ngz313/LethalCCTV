@@ -20,6 +20,13 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
     //   • No floating cameras — every candidate's anchor comes from a
     //     raycast hit on the MountMask and is inset a fixed small distance
     //     back along the surface normal into open air. No hit ⇒ no candidate.
+    //   • Flat structural surfaces only (#1313) — the hit must pass
+    //     IsStructuralPatch (a ~1.2 m coplanar patch on a large collider)
+    //     before any gate or ranking; pipes, beams, rails and trim fail. A
+    //     tile with no such surface gets no camera.
+    //   • No free-standing surfaces (#1367) — the hit must also pass
+    //     IsFreeStandingSurface: a room surface facing the same way just
+    //     behind it, inside the tile, marks furniture or a partition.
     //   • No in-wall cameras — a CheckSphere on the SolidMask at the final
     //     point must be empty.
     //   • No floor cameras / no skyward shafts — floor-facing surfaces
@@ -139,19 +146,70 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
         // verifies the camera body is not embedded, so centering the sphere
         // closer to the surface than its radius would reject every legitimate
         // flat wall/ceiling hit by overlapping the very surface we snapped to.
-        private const float SurfaceInsetM = 0.28f;     // inward offset along normal
+        internal const float SurfaceInsetM = 0.28f;    // inward offset along normal
         private const float MinSurfaceDistM = 1.0f;    // ignore surfaces nearer than this to origin
         private const float MaxUpCastM = 22f;
         private const float HorizCastMarginM = 1.0f;
         private const float MountClearRadiusM = 0.16f; // embedding check radius
         private static readonly Vector3 CameraBodyOverlapHalfExtentsM = new Vector3(0.22f, 0.18f, 0.30f);
-        // The mounting plate is 0.36 x 0.24 m. Probe slightly beyond it so every
-        // accepted procedural pose has continuous wall/ceiling support under the
-        // complete asset instead of merely touching at its origin near an edge.
-        private const float SupportFootprintHalfWidthM = 0.21f;
-        private const float SupportFootprintHalfHeightM = 0.15f;
-        private const float SupportNormalMinDot = 0.85f;
         private const float CornerProbeM = 1.6f;       // perpendicular wall probe for corner-ness
+        // The side wall's structural patch is evaluated on a hit taken
+        // WallPatchHalfExtents.x + this further into the room than the mount,
+        // so its nearest samples stay SurfaceInsetM + this (0.38 m) clear of
+        // the mount wall's plane (see HasStructuralSideWall).
+        private const float CornerSidePatchMarginM = 0.1f;
+
+        // ---- structural mount patch (#1313) --------------------------------
+        // Half-extents (tangent U, bitangent V) of the flat patch every wall
+        // and ceiling mount must sit on: 1.2 m x 0.6 m on walls (U horizontal),
+        // 1.2 m x 1.2 m on ceilings. Pipes, beams, rails and trim are narrower
+        // than this, so they fail IsStructuralPatch before any gate or ranking.
+        public static readonly Vector2 WallPatchHalfExtents = new Vector2(0.6f, 0.3f);
+        public static readonly Vector2 CeilingPatchHalfExtents = new Vector2(0.6f, 0.6f);
+        private static readonly StructuralPatchOffset[] s_wallPatchOffsets =
+            StructuralPatchLogic.SampleOffsets(WallPatchHalfExtents.x, WallPatchHalfExtents.y);
+        private static readonly StructuralPatchOffset[] s_ceilingPatchOffsets =
+            StructuralPatchLogic.SampleOffsets(CeilingPatchHalfExtents.x, CeilingPatchHalfExtents.y);
+        // Extra probe reach past the plane tolerance, so a sample slightly
+        // beyond tolerance is still measured (and named) rather than missed.
+        private const float PatchProbeSlackM = 0.02f;
+
+        // ---- free-standing probe (#1367 D2) --------------------------------
+        // Scratch buffers for IsFreeStandingSurface, main thread only. 32 hits
+        // inside 1.5 m would take 32 stacked surfaces behind one mount.
+        private const int FreeStandingHitCapacity = 32;
+        private static readonly RaycastHit[] s_freeStandingRayHits = new RaycastHit[FreeStandingHitCapacity];
+        private static readonly FreeStandingProbeHit[] s_freeStandingProbeHits = new FreeStandingProbeHit[FreeStandingHitCapacity];
+
+        // ---- fixture-obstruction veto (#1367 P1) ---------------------------
+        // Hierarchy accessors for StructuralPatchLogic.FirstFixtureTokenInChain,
+        // cached so LooksLikeFixtureObstruction creates no delegate per call.
+        private static readonly System.Func<Transform, Transform> s_fixtureParent = t => t.parent;
+        private static readonly System.Func<Transform, string> s_fixtureName = t => t.name;
+        private static readonly System.Func<Transform, bool> s_fixtureIsTileRoot = t => t.GetComponent<Tile>() != null;
+
+        // ---- clutter / structural-wall resolution (#645) -------------------
+        // Wall-mounted pipe, duct, and clutter colliders live on the same
+        // MountMask layers as structural walls, so the first raycast hit can
+        // be a fixture standing proud of the visible wall — mounting there
+        // floats the camera off the room's wall plane. After an accepted
+        // wall hit, the ray continues up to ClutterDepthM behind it looking
+        // for a second wall-like surface; anything deeper than that gap is
+        // the local wall itself (an alcove face, a column), not clutter.
+        private const float ClutterDepthM = 1.0f;
+        // Continuation rays restart this far past the first hit point so
+        // they cannot re-hit the same collider face at zero distance.
+        private const float ClutterRayRestartM = 0.02f;
+        // Lateral vote rays are offset this far along the wall tangent and
+        // vertically from the original probe origin. Wide structural
+        // geometry answers offset rays at its own depth; a narrow pipe run
+        // lets them through to the wall behind, and that majority verdict
+        // (MountDepthLogic.IsNarrowProtrusion) authorizes re-targeting the
+        // mount onto the second, structural hit.
+        private const float ClutterLateralOffsetM = 0.4f;
+        // How closely a lateral hit must agree with a plane's expected depth
+        // to vote for that plane.
+        private const float ClutterDepthVoteToleranceM = 0.1f;
 
         // ---- mount-height window above entry floor -------------------------
         private const float MinMountHeightM = 2.3f;    // clearly above player eye level
@@ -206,9 +264,8 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
         // verdict — which decides whether a camera is KEPT, i.e. affects
         // camera count — is identical on host and client regardless of each
         // player's local far-clip setting.
-        private const float VoidProbeDistM = 40f;
+        private static float VoidProbeDistM => CameraPlacementSafety.ProbeDistance;
         private const float HalfFovDeg = 37.5f;        // ~75° FOV default
-        private const float VoidRayMaxFrac = 0.5f;     // >half rays escaping ⇒ reject
 
         // ---- within-tile dedup (so the redundancy fallback list is diverse) -
         private const float DupPosM = 1.0f;
@@ -216,13 +273,19 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
         private const float TileLocalMountMarginM = 0.35f;
 
         // ---- scoring --------------------------------------------------------
+        // Base by surface kind: wall 360, ceiling 80. A Corner is a wall mount
+        // with a second structural wall beside it (IsStructuralCorner) and adds
+        // ScoreStructuralCornerBonus to the wall base.
         private const float ScoreCeilingBase = 80f;
-        private const float ScoreCornerBase = 520f;
         private const float ScoreWallBase = 360f;
-        // High enough that a genuinely higher vantage beats a same-kind
-        // low mount (1m of height = 40 pts), still far below the kind/
-        // profile bonuses so it re-ranks within a tier, not across tiers.
-        private const float ScoreHeightWeight = 40f;
+        // A corner beats a plain wall at equal height, but stays under one sample
+        // tier of wall height (0.8 m hallway = 128 pts, 0.9 m room = 144 pts).
+        private const float ScoreStructuralCornerBonus = 120f;
+        // Points per metre of mount height above the entry floor, capped at
+        // MaxMountHeightM. On walls and corners one tier higher beats the corner bonus.
+        private const float ScoreWallHeightWeight = 160f;
+        // Ceilings keep 40 pts/m, so a higher ceiling never gains on a wall.
+        private const float ScoreCeilingHeightWeight = 40f;
         private const float ScoreUsefulDistWeight = 4f;
         private const float ScoreUsefulDistCapM = 18f;
         private const float ScoreFrustumWeight = 120f;
@@ -241,17 +304,6 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
         private const float GrandRoomTargetHeightM = 1.4f;
         private const float GrandRoomScoreBonus = 2000f;
 
-        // Deterministic frustum sample offsets (yawDeg, pitchDeg) within the
-        // ~75° cone. Index 0 is the center ray. Same fixed set every call.
-        private static readonly Vector2[] s_frustumOffsets =
-        {
-            new Vector2(0f, 0f),
-            new Vector2(25f, 0f), new Vector2(-25f, 0f),
-            new Vector2(0f, 18f), new Vector2(0f, -18f),
-            new Vector2(25f, 18f), new Vector2(25f, -18f),
-            new Vector2(-25f, 18f), new Vector2(-25f, -18f),
-        };
-
         // 8 horizontal probe directions in tile-local XZ: 4 cardinal + 4
         // corner-biased (scaled by extents so a rectangular room aims its
         // diagonals at actual corners).
@@ -265,7 +317,8 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             in PlacementMasks masks,
             in CameraSemanticContext semantic,
             bool relaxed,
-            bool debug)
+            bool debug,
+            StructuralPatchRejectTally patchRejects = null)
         {
             var result = new List<Candidate>(16);
             if (tile == null || tile.Placement == null) return result;
@@ -322,7 +375,9 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                     if (Physics.Raycast(ceilOriginW, upWorld, out RaycastHit upHit, MaxUpCastM,
                             masks.MountMask, QueryTriggerInteraction.Ignore)
                         && upHit.distance >= MinSurfaceDistM
-                        && upHit.normal.y < -CeilingNormalMinDownY)
+                        && upHit.normal.y < -CeilingNormalMinDownY
+                        && PassesStructuralPatch(in upHit, SurfaceKind.Ceiling, box, in masks, patchRejects,
+                            debug, sortedIndex, tile, oi, /*dir*/ 9))
                     {
                         Vector3 normal = upHit.normal;                       // points down into room
                         Vector3 mountPos = upHit.point + normal * SurfaceInsetM;
@@ -369,6 +424,17 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                         if (wHit.distance < MinSurfaceDistM) continue;
                         if (Mathf.Abs(wHit.normal.y) >= WallNormalMaxAbsY) continue; // floor/ceiling, not a wall
 
+                        // Clutter resolution: a narrow fixture in front of the
+                        // structural wall re-targets the mount to the wall
+                        // behind it; the safety gates then run against the
+                        // re-targeted pose and reject it if the fixture
+                        // overlaps the camera body. Never mount on clutter.
+                        if (TryRetargetClutterHitToStructuralWall(
+                                wallOriginW, dirW, ref wHit, masks.MountMask, out Collider clutterCol))
+                        {
+                            if (debug) LogClutterRetarget(sortedIndex, tile, SurfaceKind.Wall, oi, di, clutterCol, wHit);
+                        }
+
                         Vector3 normalH = new Vector3(wHit.normal.x, 0f, wHit.normal.z);
                         if (normalH.sqrMagnitude < 1e-6f) continue;
                         normalH.Normalize();
@@ -386,9 +452,13 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                             continue;
                         }
 
-                        // Corner-ness: probe perpendicular to the wall normal; if a
-                        // second wall is close on either side, this is a corner.
-                        bool isCorner = IsNearCorner(mountPos, normalH, masks.MountMask);
+                        if (!PassesStructuralPatch(in wHit, SurfaceKind.Wall, box, in masks, patchRejects,
+                                debug, sortedIndex, tile, oi, di))
+                            continue;
+
+                        // Corner: a second structural wall close beside the mount
+                        // on either side (see IsStructuralCorner).
+                        bool isCorner = IsStructuralCorner(mountPos, normalH, box, placement, masks.MountMask);
                         SurfaceKind kind = isCorner ? SurfaceKind.Corner : SurfaceKind.Wall;
                         float aimScore;
                         string aimProfile;
@@ -431,7 +501,7 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             {
                 AddDoorwayHeaderCandidates(
                     result, tile, box, placement, worldFloorY, roomHeight, minUsefulCenter,
-                    in masks, in semantic, relaxed, debug, sortedIndex);
+                    in masks, in semantic, relaxed, debug, sortedIndex, patchRejects);
             }
 
             // Rank best→worst, stable deterministic tiebreaks.
@@ -459,7 +529,8 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             in CameraSemanticContext semantic,
             bool relaxed,
             bool debug,
-            int sortedIndex)
+            int sortedIndex,
+            StructuralPatchRejectTally patchRejects)
         {
             IReadOnlyList<DoorwayFact> doorways = semantic.Doorways;
             if (doorways == null) return;
@@ -489,6 +560,14 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                     continue;
                 if (Mathf.Abs(wHit.normal.y) >= WallNormalMaxAbsY) continue;
 
+                // Same clutter resolution as the wall probes: a conduit or
+                // sign face over the header must not become the mount plane.
+                if (TryRetargetClutterHitToStructuralWall(
+                        probeOrigin, -intoTile, ref wHit, masks.MountMask, out Collider headerClutterCol))
+                {
+                    if (debug) LogClutterRetarget(sortedIndex, tile, SurfaceKind.Wall, 9, Mathf.Min(i, 9), headerClutterCol, wHit);
+                }
+
                 Vector3 normalH = new Vector3(wHit.normal.x, 0f, wHit.normal.z);
                 if (normalH.sqrMagnitude < 1e-6f) continue;
                 normalH.Normalize();
@@ -506,6 +585,9 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
 
                 Vector3 mountPos = wHit.point + wHit.normal * SurfaceInsetM;
                 if (!IsWithinExpandedTileBox(placement, box, mountPos, TileLocalMountMarginM, out _))
+                    continue;
+                if (!PassesStructuralPatch(in wHit, SurfaceKind.Wall, box, in masks, patchRejects,
+                        debug, sortedIndex, tile, /*origin*/ 9, Mathf.Min(i, 9)))
                     continue;
 
                 Vector3 lookDir;
@@ -536,6 +618,7 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             int sortedIndex,
             in PlacementMasks masks,
             bool debug,
+            StructuralPatchRejectTally patchRejects,
             out Candidate candidate)
         {
             candidate = default;
@@ -571,6 +654,9 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             if (!Physics.Raycast(probeWorld, upWorld, out RaycastHit hit, MaxUpCastM, masks.MountMask, QueryTriggerInteraction.Ignore))
                 return false;
             if (hit.distance < MinSurfaceDistM || hit.normal.y >= -CeilingNormalMinDownY)
+                return false;
+            if (!PassesStructuralPatch(in hit, SurfaceKind.Ceiling, box, in masks, patchRejects,
+                    debug, sortedIndex, tile, originIdx: 8, dirIdx: 9))
                 return false;
 
             Vector3 mountPos = hit.point + hit.normal * SurfaceInsetM;
@@ -669,7 +755,9 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
 
         // Build + gate a candidate; append to list if it survives. Centralizes
         // the embedding check, mount-height window, pitch gate, and view-quality
-        // sweep so ceiling, wall, and legacy fallback paths share one source of truth.
+        // sweep so every ceiling and wall source shares one source of truth.
+        // Callers run PassesStructuralPatch (or IsStructuralPatch and
+        // IsFreeStandingSurface) on the surface hit first.
         private static void TryAddCandidate(
             List<Candidate> outList, in PlacementMasks masks,
             Vector3 mountPos, Vector3 lookDir, Vector3 supportNormalWorld,
@@ -690,28 +778,32 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                 ? HallwayMinMountHeightM
                 : MinMountHeightM;
 
+            lookDir = CameraPlacementSafety.AimAtPlayablePatch(tile, mountPos, lookDir);
             Vector3 forward = lookDir.normalized;
             Quaternion rot = Quaternion.LookRotation(forward, Vector3.up);
             if (!TryEvaluateSafetyGates(
                     in masks, mountPos, rot, forward, kind, worldFloorY, minUsefulCenter, minMountHeight,
-                    supportNormalWorld, hitCol, originIdx, dirIdx, debug, sortedIndex, tile, out SafetyGateResult gate))
+                    hitCol, originIdx, dirIdx, debug, sortedIndex, tile,
+                    out SafetyGateResult gate))
             {
                 return;
             }
 
-            // Score: surface-type preference (ceiling > corner > wall), then
-            // mounting height, useful view distance, and frustum hit ratio,
-            // minus a near-wall penalty.
+            // Score: surface-kind base (ScoreWallBase, plus
+            // ScoreStructuralCornerBonus for a Corner; ScoreCeilingBase), then
+            // mounting height weighted per kind, useful view distance and
+            // frustum hit ratio, minus a near-wall penalty, plus aim bonuses.
             float score = kind == SurfaceKind.Ceiling ? ScoreCeilingBase
-                        : kind == SurfaceKind.Corner ? ScoreCornerBase
+                        : kind == SurfaceKind.Corner ? ScoreWallBase + ScoreStructuralCornerBonus
                         : ScoreWallBase;
-            score += Mathf.Min(gate.MountHeightAboveFloorM, MaxMountHeightM) * ScoreHeightWeight;
+            float heightWeight = kind == SurfaceKind.Ceiling ? ScoreCeilingHeightWeight : ScoreWallHeightWeight;
+            score += Mathf.Min(gate.MountHeightAboveFloorM, MaxMountHeightM) * heightWeight;
             score += Mathf.Min(gate.CenterUsefulDistM, ScoreUsefulDistCapM) * ScoreUsefulDistWeight;
-            score += (gate.FrustumHits / (float)s_frustumOffsets.Length) * ScoreFrustumWeight;
+            score += (gate.FrustumHits / (float)25) * ScoreFrustumWeight;
             if (gate.CenterUsefulDistM < NearWallKneeM)
                 score -= (NearWallKneeM - gate.CenterUsefulDistM) * ScoreNearWallPenalty;
-            float roomFramingScore = gate.FrustumHits / (float)s_frustumOffsets.Length -
-                                     gate.FrustumNearWall * 0.08f - gate.FrustumVoids * 0.12f;
+            float roomFramingScore = gate.FrustumHits / (float)25 -
+                                     gate.FrustumNearWall * (9f / 25f) * 0.08f - gate.FrustumVoids * (9f / 25f) * 0.12f;
             score += doorwayScore * ScoreDoorwayVisibleWeight;
             score += roomFramingScore * ScoreRoomFramingWeight;
             if (semantic.Shape == CameraTileShape.LongStraightHallway && aimProfile == "hallway-long")
@@ -735,38 +827,6 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                 doorwayScore, roomFramingScore, aimProfile));
         }
 
-        internal static bool TryValidateLegacyFallbackPose(
-            Tile tile,
-            Bounds box,
-            int sortedIndex,
-            in PlacementMasks masks,
-            Vector3 worldPos,
-            Quaternion worldRot,
-            CameraMountMode mountMode,
-            int cornerId,
-            bool debug,
-            out SafetyGateResult gate)
-        {
-            gate = default;
-            if (tile == null || tile.Placement == null) return false;
-            if (box.size.sqrMagnitude < 1e-6f) return false;
-
-            TilePlacementData placement = tile.Placement;
-            Vector3 centerL = box.center;
-            float dFloorY = ComputeEntryFloorY(tile, placement, box.min.y);
-            float worldFloorY = ToWorld(placement, new Vector3(centerL.x, dFloorY, centerL.z)).y;
-            Vector3 forward = worldRot * Vector3.forward;
-            if (forward.sqrMagnitude < 1e-6f) return false;
-            forward.Normalize();
-            Quaternion normalizedRot = Quaternion.LookRotation(forward, Vector3.up);
-
-            return TryEvaluateSafetyGates(
-                in masks, worldPos, normalizedRot, forward, InferSurfaceKind(mountMode),
-                worldFloorY, MinUsefulCenterDistRelaxedM, MinMountHeightM,
-                Vector3.zero, null, 9, cornerId,
-                debug, sortedIndex, tile, out gate);
-        }
-
         private static bool TryEvaluateSafetyGates(
             in PlacementMasks masks,
             Vector3 mountPos,
@@ -776,7 +836,6 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             float worldFloorY,
             float minUsefulCenter,
             float minMountHeight,
-            Vector3 supportNormal,
             Collider supportCollider,
             int originIdx,
             int dirIdx,
@@ -792,13 +851,6 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             if (supportCollider != null && LooksLikeFixtureObstruction(supportCollider, 0f))
             {
                 if (debug) LogReject(sortedIndex, tile, kind, "fixture-support", 0f, originIdx, dirIdx, supportCollider);
-                return false;
-            }
-
-            if (supportCollider != null && !HasContinuousSupportFootprint(
-                    mountPos, rot, supportNormal, supportCollider, masks.MountMask))
-            {
-                if (debug) LogReject(sortedIndex, tile, kind, "unsupported-footprint", 0f, originIdx, dirIdx, supportCollider);
                 return false;
             }
 
@@ -836,8 +888,7 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             // NOT used here: Terrain/Default can be the outside shell, and
             // accepting those hits produced skybox-looking interior feeds.
             float centerDist;
-            if (Physics.Raycast(mountPos, forward, out RaycastHit cHit, VoidProbeDistM,
-                    masks.MountMask, QueryTriggerInteraction.Ignore))
+            if (CameraPlacementSafety.Raycast(mountPos, forward, VoidProbeDistM, out RaycastHit cHit))
             {
                 if (LooksLikeFixtureObstruction(cHit.collider, cHit.distance))
                 {
@@ -861,31 +912,17 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
                 return false;
             }
 
-            // Frustum sweep: count rays that hit useful interior structure vs
-            // rays that escape to void/outside-shell/skybox vs near-wall rays.
-            int hits = 0, voids = 0, nearWall = 0;
-            for (int f = 0; f < s_frustumOffsets.Length; f++)
+            if (!CameraPlacementSafety.HasPlayableView(tile, mountPos, rot))
             {
-                Vector2 off = s_frustumOffsets[f];
-                Vector3 fdir = (rot * Quaternion.Euler(off.y, off.x, 0f)) * Vector3.forward;
-                if (Physics.Raycast(mountPos, fdir, out RaycastHit fHit, VoidProbeDistM,
-                        masks.MountMask, QueryTriggerInteraction.Ignore))
-                {
-                    hits++;
-                    if (fHit.distance < NearWallKneeM) nearWall++;
-                }
-                else
-                {
-                    voids++;
-                }
-            }
-
-            float voidFrac = voids / (float)s_frustumOffsets.Length;
-            if (voidFrac > VoidRayMaxFrac)
-            {
-                if (debug) LogReject(sortedIndex, tile, kind, "void/skybox", voidFrac, originIdx, dirIdx, supportCollider);
+                if (debug) LogReject(sortedIndex, tile, kind, "no-connected-safe-floor-in-view", 0f, originIdx, dirIdx, supportCollider);
                 return false;
             }
+            if (!CameraPlacementSafety.ValidateView(mountPos, rot, 0f, out _, out int nearWall, out string viewReason))
+            {
+                if (debug) LogReject(sortedIndex, tile, kind, viewReason, 0f, originIdx, dirIdx, supportCollider);
+                return false;
+            }
+            int hits = 25, voids = 0;
 
             gate = new SafetyGateResult(forward, rot, mountHeight, centerDist, hits, voids, nearWall);
             return true;
@@ -911,87 +948,161 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             return false;
         }
 
-        private static SurfaceKind InferSurfaceKind(CameraMountMode mountMode)
+        // Structural-patch gate shared by every procedural wall and ceiling
+        // source: runs IsStructuralPatch with the extents for the surface kind,
+        // then the free-standing probe (#1367) against the tile-local box,
+        // tallies the reject category for the tile and logs it as a
+        // SURFACE_REJECT with reason patch:<reason>.
+        private static bool PassesStructuralPatch(
+            in RaycastHit hit,
+            SurfaceKind kind,
+            Bounds box,
+            in PlacementMasks masks,
+            StructuralPatchRejectTally patchRejects,
+            bool debug,
+            int sortedIndex,
+            Tile tile,
+            int originIdx,
+            int dirIdx)
         {
-            return mountMode == CameraMountMode.Wall ? SurfaceKind.Wall : SurfaceKind.Ceiling;
+            Vector2 halfExtents = kind == SurfaceKind.Ceiling ? CeilingPatchHalfExtents : WallPatchHalfExtents;
+            if (IsStructuralPatch(in hit, halfExtents, masks.MountMask, out string reason))
+            {
+                if (!IsFreeStandingSurface(in hit, box, tile.Placement, masks.MountMask, out reason))
+                    return true;
+            }
+
+            patchRejects?.Add(reason);
+            if (debug) LogReject(sortedIndex, tile, kind, "patch:" + reason, hit.distance, originIdx, dirIdx, hit.collider);
+            return false;
         }
 
-        private static bool HasContinuousSupportFootprint(
-            Vector3 mountPos,
-            Quaternion rotation,
-            Vector3 supportNormal,
-            Collider supportCollider,
-            int mountMask)
+        // Flat structural surface test (#1313). A wall or ceiling hit is a
+        // valid mount only when (1) the hit collider's bounds span at least
+        // StructuralPatchLogic.MinColliderTangentExtentM along one patch axis
+        // and (2) every probe of a grid over the patch (half-extents
+        // halfExtents along U and V, spacing SampleSpacingM) lands on one
+        // plane: a ray from ProbeStandoffM in front of the patch, cast back
+        // along -normal, must hit within PlaneToleranceM of the hit plane with
+        // a normal within MinNormalDot of the hit normal. Pipes, beams, rails,
+        // trim and narrow colliders fail; a coplanar neighbour collider passes.
+        // U is the horizontal wall tangent for walls (|normal.y| < 0.5) and a
+        // world-axis projection for ceilings, so the grid is deterministic.
+        // reason is "pass" or the first failure (see StructuralPatchLogic).
+        public static bool IsStructuralPatch(in RaycastHit hit, Vector2 halfExtents, int mask, out string reason)
         {
-            if (supportCollider == null || mountMask == 0)
+            Collider collider = hit.collider;
+            if (collider == null)
+            {
+                reason = "no-collider";
+                return false;
+            }
+
+            Vector3 n = hit.normal.normalized;
+            Vector3 u;
+            if (Mathf.Abs(n.y) < WallNormalMaxAbsY)
+            {
+                u = Vector3.Cross(Vector3.up, n);
+            }
+            else
+            {
+                u = Vector3.ProjectOnPlane(Vector3.right, n);
+                if (u.sqrMagnitude < 1e-6f)
+                    u = Vector3.ProjectOnPlane(Vector3.forward, n);
+            }
+            u.Normalize();
+            Vector3 v = Vector3.Cross(n, u);
+
+            Vector3 size = collider.bounds.size;
+            float extentU = Mathf.Abs(u.x) * size.x + Mathf.Abs(u.y) * size.y + Mathf.Abs(u.z) * size.z;
+            float extentV = Mathf.Abs(v.x) * size.x + Mathf.Abs(v.y) * size.y + Mathf.Abs(v.z) * size.z;
+            if (!StructuralPatchLogic.EvaluateBounds(extentU, extentV, out reason))
                 return false;
 
-            Vector3 normal = supportNormal;
-            if (normal.sqrMagnitude < 1e-6f)
-                normal = mountPos - supportCollider.ClosestPoint(mountPos);
-            if (normal.sqrMagnitude < 1e-6f)
+            StructuralPatchOffset[] offsets = PatchOffsetsFor(halfExtents);
+            float castDistance = StructuralPatchLogic.ProbeStandoffM + StructuralPatchLogic.PlaneToleranceM + PatchProbeSlackM;
+            Vector3 standoff = n * StructuralPatchLogic.ProbeStandoffM;
+            for (int i = 0; i < offsets.Length; i++)
             {
-                // Reviewed/legacy poses intentionally pass no support collider and never
-                // reach this path. This fallback only covers unusual MeshCollider
-                // ClosestPoint behavior on a procedural raycast hit.
-                Vector3 reverse = rotation * Vector3.back;
-                if (!Physics.Raycast(
-                        mountPos,
-                        reverse,
-                        out RaycastHit centerHit,
-                        SurfaceInsetM + 0.12f,
-                        mountMask,
-                        QueryTriggerInteraction.Ignore))
+                Vector3 origin = hit.point + u * offsets[i].U + v * offsets[i].V + standoff;
+                if (!Physics.Raycast(origin, -n, out RaycastHit sampleHit, castDistance, mask, QueryTriggerInteraction.Ignore))
                 {
+                    StructuralPatchLogic.EvaluateSample(i, in offsets[i], StructuralPatchSample.Miss, out reason);
                     return false;
                 }
-                normal = centerHit.normal;
-            }
-            normal.Normalize();
 
-            Vector3 tangent = Vector3.ProjectOnPlane(rotation * Vector3.right, normal);
-            if (tangent.sqrMagnitude < 1e-6f)
-                tangent = Vector3.Cross(Vector3.up, normal);
-            if (tangent.sqrMagnitude < 1e-6f)
-                tangent = Vector3.Cross(Vector3.forward, normal);
-            tangent.Normalize();
-            Vector3 bitangent = Vector3.Cross(normal, tangent).normalized;
-            Vector3 surfaceCenter = mountPos - normal * SurfaceInsetM;
+                bool sameCollider = ReferenceEquals(sampleHit.collider, collider);
+                var sample = new StructuralPatchSample(
+                    true,
+                    Vector3.Dot(sampleHit.point - hit.point, n),
+                    Vector3.Dot(sampleHit.normal, n),
+                    sameCollider,
+                    colliderName: null);
+                if (StructuralPatchLogic.EvaluateSample(i, in offsets[i], in sample, out reason))
+                    continue;
 
-            return HasSupportAt(surfaceCenter, normal, Vector3.zero, mountMask)
-                && HasSupportAt(surfaceCenter, normal, tangent * SupportFootprintHalfWidthM, mountMask)
-                && HasSupportAt(surfaceCenter, normal, -tangent * SupportFootprintHalfWidthM, mountMask)
-                && HasSupportAt(surfaceCenter, normal, bitangent * SupportFootprintHalfHeightM, mountMask)
-                && HasSupportAt(surfaceCenter, normal, -bitangent * SupportFootprintHalfHeightM, mountMask)
-                && HasSupportAt(surfaceCenter, normal,
-                    tangent * SupportFootprintHalfWidthM + bitangent * SupportFootprintHalfHeightM, mountMask)
-                && HasSupportAt(surfaceCenter, normal,
-                    tangent * SupportFootprintHalfWidthM - bitangent * SupportFootprintHalfHeightM, mountMask)
-                && HasSupportAt(surfaceCenter, normal,
-                    -tangent * SupportFootprintHalfWidthM + bitangent * SupportFootprintHalfHeightM, mountMask)
-                && HasSupportAt(surfaceCenter, normal,
-                    -tangent * SupportFootprintHalfWidthM - bitangent * SupportFootprintHalfHeightM, mountMask);
-        }
-
-        private static bool HasSupportAt(
-            Vector3 surfaceCenter,
-            Vector3 expectedNormal,
-            Vector3 offset,
-            int mountMask)
-        {
-            Vector3 origin = surfaceCenter + offset + expectedNormal * 0.08f;
-            if (!Physics.Raycast(
-                    origin,
-                    -expectedNormal,
-                    out RaycastHit hit,
-                    0.18f,
-                    mountMask,
-                    QueryTriggerInteraction.Ignore))
-            {
+                // The collider name is read only for a failing foreign sample
+                // (Unity's name getter allocates).
+                if (!sameCollider)
+                {
+                    sample = new StructuralPatchSample(
+                        true, sample.PlaneOffsetM, sample.NormalDot, false,
+                        sampleHit.collider != null ? sampleHit.collider.name : null);
+                    StructuralPatchLogic.EvaluateSample(i, in offsets[i], in sample, out reason);
+                }
                 return false;
             }
 
-            return Vector3.Dot(hit.normal.normalized, expectedNormal) >= SupportNormalMinDot;
+            reason = StructuralPatchLogic.PassReason;
+            return true;
+        }
+
+        private static StructuralPatchOffset[] PatchOffsetsFor(Vector2 halfExtents)
+        {
+            if (halfExtents == WallPatchHalfExtents) return s_wallPatchOffsets;
+            if (halfExtents == CeilingPatchHalfExtents) return s_ceilingPatchOffsets;
+            return StructuralPatchLogic.SampleOffsets(halfExtents.x, halfExtents.y);
+        }
+
+        // Free-standing probe (#1367 D2). True when an accepted wall or ceiling
+        // hit is a free-standing surface (a shelf side, panel or partition
+        // standing in the room): a ray cast straight into the surface (along
+        // -normal, from StructuralPatchLogic.FreeStandingProbeStartM behind the
+        // hit point, FreeStandingProbeDistanceM long, mount mask, triggers
+        // ignored) finds a surface facing the same way inside tileLocalBox
+        // shrunk by FreeStandingTileInsetM. tileLocalBox is the spawner's tile
+        // box (ComputeWorldAabbLocal, or LocalBounds on a degenerate tile) and
+        // placement the owning tile's; with no placement there is no tile frame
+        // and the hit passes. reason is "free-standing" or "pass". Main thread
+        // only (static scratch buffers); allocates nothing.
+        internal static bool IsFreeStandingSurface(
+            in RaycastHit hit, Bounds tileLocalBox, TilePlacementData placement, int mask, out string reason)
+        {
+            reason = StructuralPatchLogic.PassReason;
+            if (placement == null) return false;
+            Vector3 n = hit.normal.normalized;
+            if (n.sqrMagnitude < 1e-6f) return false;
+
+            Vector3 dir = -n;
+            int count = Physics.RaycastNonAlloc(
+                hit.point + dir * StructuralPatchLogic.FreeStandingProbeStartM, dir, s_freeStandingRayHits,
+                StructuralPatchLogic.FreeStandingProbeDistanceM, mask, QueryTriggerInteraction.Ignore);
+            if (count == 0) return false;
+
+            Matrix4x4 worldToLocal = Matrix4x4.TRS(
+                placement.Position, placement.Rotation, Vector3.one).inverse;
+            for (int i = 0; i < count; i++)
+            {
+                RaycastHit behind = s_freeStandingRayHits[i];
+                Vector3 local = worldToLocal.MultiplyPoint3x4(behind.point);
+                s_freeStandingProbeHits[i] = new FreeStandingProbeHit(
+                    Vector3.Dot(behind.normal, n), local.x, local.y, local.z);
+            }
+
+            Vector3 min = tileLocalBox.min;
+            Vector3 max = tileLocalBox.max;
+            var box = new TileLocalBox(min.x, min.y, min.z, max.x, max.y, max.z);
+            return StructuralPatchLogic.IsFreeStanding(s_freeStandingProbeHits, count, in box, out reason);
         }
 
         // Highest-priority aim: look at the tile's focus point (main-entrance
@@ -1108,26 +1219,154 @@ namespace Y4NGZCompany.Facility.Cameras.Placement
             return true;
         }
 
+        // A collider within 3.5 m is a fixture when its GameObject's name, or an
+        // ancestor's name below the DunGen tile root, contains a
+        // StructuralPatchLogic.FixtureNameTokens fragment (#1367 P1). Ancestors
+        // count because some furniture keeps its colliders on generic children:
+        // the Mansion CurvedShelf bookcase's BoxColliders are "Cube", "Cube (1)"
+        // under "Colliders" under "CurvedShelf". The tile root and everything
+        // above it are never checked, so a tile or level name cannot veto.
         private static bool LooksLikeFixtureObstruction(Collider collider, float distance)
         {
             if (collider == null || distance > 3.5f) return false;
-            string name = collider.name ?? string.Empty;
-            return ContainsToken(name, "pipe") ||
-                   ContainsToken(name, "vent") ||
-                   ContainsToken(name, "beam") ||
-                   ContainsToken(name, "furniture") ||
-                   ContainsToken(name, "shelf") ||
-                   ContainsToken(name, "rack");
+            return StructuralPatchLogic.FirstFixtureTokenInChain(
+                collider.transform, s_fixtureParent, s_fixtureName, s_fixtureIsTileRoot) != null;
         }
 
-        private static bool IsNearCorner(Vector3 mountPos, Vector3 wallNormalH, int mountMask)
+        // Structural-wall resolution for an accepted wall hit (#645). The ray
+        // continues past the first hit; only when a second wall-like surface
+        // exists within ClutterDepthM AND the lateral vote (majority of the
+        // four offset rays answering at the second surface's depth) proves
+        // the first surface narrow is the hit re-targeted onto the second,
+        // structural surface. No second surface, a non-wall second surface,
+        // or a wide first surface keeps the original hit — the first hit IS
+        // the wall in those cases. The caller's downstream safety gates
+        // (embed CheckSphere, body OverlapBox) run against whichever pose
+        // this resolves to, so a re-target into clutter-overlapping space is
+        // rejected there rather than mounted.
+        private static bool TryRetargetClutterHitToStructuralWall(
+            Vector3 rayOrigin, Vector3 dirW, ref RaycastHit wHit, int mountMask, out Collider clutterCollider)
+        {
+            clutterCollider = null;
+
+            Vector3 contOrigin = wHit.point + dirW * ClutterRayRestartM;
+            if (!Physics.Raycast(contOrigin, dirW, out RaycastHit second, ClutterDepthM,
+                    mountMask, QueryTriggerInteraction.Ignore))
+                return false;
+            if (Mathf.Abs(second.normal.y) >= WallNormalMaxAbsY)
+                return false;
+
+            Vector3 firstNormalH = new Vector3(wHit.normal.x, 0f, wHit.normal.z);
+            if (firstNormalH.sqrMagnitude < 1e-6f)
+                return false;
+            Vector3 tangent = Vector3.Cross(Vector3.up, firstNormalH).normalized;
+
+            // Lateral votes: same direction, origins offset along the wall
+            // tangent and vertically. Depths expected on each hit's plane are
+            // computed per offset ray so oblique probes classify correctly.
+            Vector3[] offsets =
+            {
+                tangent * ClutterLateralOffsetM,
+                -tangent * ClutterLateralOffsetM,
+                Vector3.up * ClutterLateralOffsetM,
+                Vector3.down * ClutterLateralOffsetM,
+            };
+            var sampleDepths = new float[offsets.Length];
+            var expectedFirst = new float[offsets.Length];
+            var expectedSecond = new float[offsets.Length];
+            for (int i = 0; i < offsets.Length; i++)
+            {
+                Vector3 origin = rayOrigin + offsets[i];
+                expectedFirst[i] = ExpectedPlaneDepth(origin, dirW, wHit.point, wHit.normal);
+                expectedSecond[i] = ExpectedPlaneDepth(origin, dirW, second.point, second.normal);
+                float castMax = expectedSecond[i] > 0f
+                    ? expectedSecond[i] + ClutterDepthVoteToleranceM * 2f
+                    : wHit.distance + ClutterRayRestartM + ClutterDepthM;
+                sampleDepths[i] = Physics.Raycast(origin, dirW, out RaycastHit lateralHit, castMax,
+                        mountMask, QueryTriggerInteraction.Ignore)
+                    ? lateralHit.distance
+                    : MountDepthLogic.MissDepth;
+            }
+
+            if (!MountDepthLogic.IsNarrowProtrusion(
+                    sampleDepths, expectedFirst, expectedSecond, ClutterDepthVoteToleranceM))
+                return false;
+
+            clutterCollider = wHit.collider;
+            wHit = second;
+            return true;
+        }
+
+        // Distance along dir from origin to the plane through planePoint with
+        // planeNormal, or a negative value when the ray is parallel to the
+        // plane or the plane lies behind the origin.
+        private static float ExpectedPlaneDepth(
+            Vector3 origin, Vector3 dir, Vector3 planePoint, Vector3 planeNormal)
+        {
+            float denom = Vector3.Dot(dir, planeNormal);
+            if (Mathf.Abs(denom) < 1e-4f) return -1f;
+            float t = Vector3.Dot(planePoint - origin, planeNormal) / denom;
+            return t > 0f ? t : -1f;
+        }
+
+        private static void LogClutterRetarget(
+            int sortedIndex, Tile tile, SurfaceKind kind,
+            int originIdx, int dirIdx, Collider clutterCol, in RaycastHit structuralHit)
+        {
+            SurveillanceBootstrap.Log.LogInfo(
+                $"[LethalCCTV] SURFACE_CLUTTER_RETARGET tile={sortedIndex} name={tile?.name} kind={kind} " +
+                $"origin={originIdx} dir={dirIdx} clutter={(clutterCol != null ? clutterCol.name : "none")} " +
+                $"wall={(structuralHit.collider != null ? structuralHit.collider.name : "none")} " +
+                $"depth={structuralHit.distance:F2}");
+        }
+
+        // Corner-ness (#1367 D3): the mount wall already passed the patch and
+        // the free-standing probe; a Corner also needs a structural side wall,
+        // tried on the left (+tangent) first and on the right only when the
+        // left has none.
+        private static bool IsStructuralCorner(
+            Vector3 mountPos, Vector3 wallNormalH, Bounds box, TilePlacementData placement, int mountMask)
         {
             Vector3 tangent = Vector3.Cross(Vector3.up, wallNormalH);
             if (tangent.sqrMagnitude < 1e-6f) return false;
             tangent.Normalize();
-            bool left = Physics.Raycast(mountPos, tangent, CornerProbeM, mountMask, QueryTriggerInteraction.Ignore);
-            bool right = Physics.Raycast(mountPos, -tangent, CornerProbeM, mountMask, QueryTriggerInteraction.Ignore);
-            return left || right;
+            return HasStructuralSideWall(mountPos, wallNormalH, tangent, box, placement, mountMask) ||
+                   HasStructuralSideWall(mountPos, wallNormalH, -tangent, box, placement, mountMask);
+        }
+
+        // A side wall within CornerProbeM of the mount along side, vertical-ish,
+        // passing the wall structural patch and the free-standing probe. The
+        // first side hit sits only SurfaceInsetM off the mount wall, so a wall
+        // patch centred on it (±WallPatchHalfExtents.x along the side wall)
+        // would straddle the mount wall's plane and fail at every real corner.
+        // A second ray along side, started WallPatchHalfExtents.x +
+        // CornerSidePatchMarginM further into the room, must land on the same
+        // side plane (PlaneToleranceM, MinNormalDot); the patch and the probe
+        // run on that hit, whose samples stay SurfaceInsetM +
+        // CornerSidePatchMarginM clear of the mount wall.
+        private static bool HasStructuralSideWall(
+            Vector3 mountPos, Vector3 wallNormalH, Vector3 side, Bounds box, TilePlacementData placement, int mountMask)
+        {
+            if (!Physics.Raycast(mountPos, side, out RaycastHit near, CornerProbeM, mountMask, QueryTriggerInteraction.Ignore))
+                return false;
+            if (Mathf.Abs(near.normal.y) >= WallNormalMaxAbsY)
+                return false;
+
+            Vector3 nearNormal = near.normal.normalized;
+            Vector3 patchOrigin = mountPos + wallNormalH * (WallPatchHalfExtents.x + CornerSidePatchMarginM);
+            float planeDepth = ExpectedPlaneDepth(patchOrigin, side, near.point, nearNormal);
+            if (planeDepth <= 0f)
+                return false;
+            if (!Physics.Raycast(patchOrigin, side, out RaycastHit far,
+                    planeDepth + StructuralPatchLogic.PlaneToleranceM + PatchProbeSlackM,
+                    mountMask, QueryTriggerInteraction.Ignore))
+                return false;
+            if (Mathf.Abs(Vector3.Dot(far.point - near.point, nearNormal)) > StructuralPatchLogic.PlaneToleranceM ||
+                Vector3.Dot(far.normal, nearNormal) < StructuralPatchLogic.MinNormalDot)
+                return false;
+
+            return IsStructuralPatch(in far, WallPatchHalfExtents, mountMask, out _) &&
+                   !IsFreeStandingSurface(in far, box, placement, mountMask, out _);
         }
 
         // 4 cardinal + 4 corner-biased local XZ directions.

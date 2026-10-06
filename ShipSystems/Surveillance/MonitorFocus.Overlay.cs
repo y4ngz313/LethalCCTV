@@ -905,10 +905,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _centerReticle = go.AddComponent<Image>();
             _centerReticle.color = new Color(0f, 0f, 0f, 0f);
             _centerReticle.raycastTarget = false;
-            CreateReticleSegment(go.transform, "Top", new Vector2(0f, 15f), new Vector2(2f, 12f));
-            CreateReticleSegment(go.transform, "Bottom", new Vector2(0f, -15f), new Vector2(2f, 12f));
-            CreateReticleSegment(go.transform, "Left", new Vector2(-15f, 0f), new Vector2(12f, 2f));
-            CreateReticleSegment(go.transform, "Right", new Vector2(15f, 0f), new Vector2(12f, 2f));
             CreateReticleSegment(go.transform, "CenterH", Vector2.zero, new Vector2(8f, 1.5f), 0.48f);
             CreateReticleSegment(go.transform, "CenterV", Vector2.zero, new Vector2(1.5f, 8f), 0.48f);
             go.SetActive(false);

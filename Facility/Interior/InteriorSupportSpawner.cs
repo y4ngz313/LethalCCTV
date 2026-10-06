@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,6 +13,7 @@ using UnityEngine;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 using Y4NGZCompany.Facility.Mainframe;
 using Y4NGZCompany.Core.Compat;
 using Y4NGZCompany.Facility.Security;
@@ -33,12 +34,18 @@ namespace Y4NGZCompany.Facility.Interior
         private const string CompanyStashAssetName = "CompanyStash";
         private const double SpawnFrameBudgetMilliseconds = 3.0;
 
+        /// <summary>
+        /// One synchronous startup step longer than this is a frame drop the coroutine
+        /// budget could not prevent, which is what the perf summary exists to flag (#707).
+        /// </summary>
+        private const double StartupStepWarningMilliseconds = 12.0;
+        private const double StartupCpuWarningMilliseconds = 50.0;
+
         private static bool _spawnAttemptedThisRound;
-        private static bool _loggedAutoSpawnDisabledThisRound;
-        private static bool _reportedDisabledAuthoredSupportThisRound;
         private static bool _reportedBudgetedStartupThisRound;
         private static readonly List<GameObject> RuntimeInstances = new List<GameObject>();
         private static GameObject _mainframePrefab;
+        private static GameObject _mainframeAlarmOwnerPrefab;
         private static GameObject _vaultPrefab;
         private static Coroutine _spawnCoroutine;
         private static InteriorSupportSpawnRunner _spawnRunner;
@@ -47,8 +54,6 @@ namespace Y4NGZCompany.Facility.Interior
         {
             StopSpawnCoroutine("run reset");
             _spawnAttemptedThisRound = false;
-            _loggedAutoSpawnDisabledThisRound = false;
-            _reportedDisabledAuthoredSupportThisRound = false;
             _reportedBudgetedStartupThisRound = false;
             MainframeSpawnDiagnostics.ResetRunState();
             CleanupRuntimeInstances("run reset");
@@ -59,6 +64,7 @@ namespace Y4NGZCompany.Facility.Interior
         {
             try
             {
+                EnsureMainframeAlarmOwnerPrefabRegistered();
                 EnsureRuntimePrefabsRegistered();
                 EnsureVaultPrefabRegistered();
             }
@@ -71,27 +77,9 @@ namespace Y4NGZCompany.Facility.Interior
         internal static void UpdateRuntime()
         {
             MainframeSpawnDiagnostics.UpdateRuntime();
+            CommitCameraReservationsIfLanded();
             if (_spawnAttemptedThisRound) return;
             if (_spawnCoroutine != null) return;
-            if (!CctvModuleConfig.InteriorSupportAutoSpawnEnabled.Value)
-            {
-                if (!_loggedAutoSpawnDisabledThisRound)
-                {
-                    _loggedAutoSpawnDisabledThisRound = true;
-                    CctvModuleConfig.Log?.LogWarning("[MoonContracts] Interior support auto-spawn skipped because CCTV Support/AutoSpawnFixtures is false; Mainframe and Company Stash codes may be generated, but the fixture GameObjects will not spawn.");
-                }
-                RoundManager disabledRound = RoundManager.Instance;
-                if (!_reportedDisabledAuthoredSupportThisRound &&
-                    disabledRound != null &&
-                    disabledRound.IsServer &&
-                    IsCurrentDungeonReady())
-                {
-                    _reportedDisabledAuthoredSupportThisRound = true;
-                    ReportDisabledAuthoredSupportRecords();
-                    AuthoredPlacementRoundReport.NotifyHostFixturePassComplete();
-                }
-                return;
-            }
             var start = StartOfRound.Instance;
             if (start == null) return;
             RoundManager round = RoundManager.Instance;
@@ -102,11 +90,32 @@ namespace Y4NGZCompany.Facility.Interior
 
             if (!TrySpawnForRoundFallback(out int roomsUsed, out int fixturesSpawned))
             {
-                AuthoredPlacementRoundReport.NotifyHostFixturePassComplete();
+                CompleteHostFixturePass("support-failed");
                 return;
             }
             CctvModuleConfig.Log?.LogInfo($"[MoonContracts] Interior support auto-spawn placed fixtures in {roomsUsed} room(s); {fixturesSpawned} fixture(s) total.");
+            CompleteHostFixturePass("support-complete");
+        }
+
+        /// <summary>#1271. The host support pass has settled: it placed its fixtures, found
+        /// nothing to place, or failed. The camera reservations queued since the camera pass
+        /// are committed before the report opens the facility placement gate, so the registry
+        /// holds the supports first and then every camera, as it did on main.</summary>
+        private static void CompleteHostFixturePass(string outcome)
+        {
+            Y4NGZCompany.Facility.Cameras.CameraReservationQueue.Commit(outcome);
             AuthoredPlacementRoundReport.NotifyHostFixturePassComplete();
+        }
+
+        /// <summary>#1271. Contract fixtures plan from the landing on. A support pass that has
+        /// not settled by then (not host-ready yet, still running, or thrown) no longer holds
+        /// the camera reservations back. A no-op once this round's claims are committed.</summary>
+        private static void CommitCameraReservationsIfLanded()
+        {
+            StartOfRound start = StartOfRound.Instance;
+            RoundManager round = RoundManager.Instance;
+            if (start != null && start.shipHasLanded && round != null && round.IsServer)
+                Y4NGZCompany.Facility.Cameras.CameraReservationQueue.Commit("landed");
         }
 
         private static bool IsSupportSpawnReady(StartOfRound start, RoundManager round)
@@ -125,14 +134,12 @@ namespace Y4NGZCompany.Facility.Interior
             return dungeon?.AllTiles != null && dungeon.AllTiles.Count > 0;
         }
 
-        private static void ReportDisabledAuthoredSupportRecords()
+        private static void ReportDisabledSupportRecords(bool mainframeEnabled, bool stashesEnabled)
         {
-            MarkResolvedKindUnused(
-                AuthoredInteriorPlacementKinds.Mainframe,
-                "consumer=mainframe reason=fixture-auto-spawn-disabled");
-            MarkResolvedKindUnused(
-                AuthoredInteriorPlacementKinds.Vault,
-                "consumer=company-stash reason=fixture-auto-spawn-disabled");
+            if (!mainframeEnabled)
+                MarkResolvedKindUnused(AuthoredInteriorPlacementKinds.Mainframe, "consumer=mainframe reason=disabled");
+            if (!stashesEnabled)
+                MarkResolvedKindUnused(AuthoredInteriorPlacementKinds.Vault, "consumer=company-stash reason=disabled");
         }
 
         private static void MarkResolvedKindUnused(string objectKind, string reason)
@@ -157,7 +164,7 @@ namespace Y4NGZCompany.Facility.Interior
             if (!_reportedBudgetedStartupThisRound)
             {
                 _reportedBudgetedStartupThisRound = true;
-                CctvModuleConfig.Log?.LogWarning(
+                CctvModuleConfig.Log?.LogInfo(
                     $"[MoonContracts.Perf] Interior support spawn is deferring its synchronous coroutine startup " +
                     $"out of UpdateRuntime and enforcing a {SpawnFrameBudgetMilliseconds:0.00}ms frame budget between startup steps.");
             }
@@ -221,7 +228,7 @@ namespace Y4NGZCompany.Facility.Interior
             LogSupportSpawnPerf(perf, result);
             if (result.Succeeded)
                 CctvModuleConfig.Log?.LogInfo($"[MoonContracts] Interior support auto-spawn placed fixtures in {result.RoomsUsed} room(s); {result.FixturesSpawned} fixture(s) total.");
-            AuthoredPlacementRoundReport.NotifyHostFixturePassComplete();
+            CompleteHostFixturePass(result.Succeeded ? "support-complete" : "support-failed");
         }
 
         private static bool ShouldYieldFrame(SpawnBudgetContext perf)
@@ -248,6 +255,23 @@ namespace Y4NGZCompany.Facility.Interior
             return null;
         }
 
+        /// <summary>#716 F4. With the CCTV terminal unpurchased,
+        /// InteriorSupportCameraInjector returns zero results by design, so "no support camera
+        /// could confirm coverage" was a guaranteed warning every single round on the most
+        /// common install. It stays a warning only when cameras were actually possible.</summary>
+        private static void LogMainframeCoverageUnconfirmed()
+        {
+            const string message =
+                "[MoonContracts.Mainframe] Mainframe spawned but no CCTV support camera could confirm coverage.";
+            if (!Y4NGZCompany.ShipSystems.Surveillance.CCTVTerminalUnlockable.IsPurchased())
+            {
+                CctvModuleConfig.Log?.LogInfo(message + " (CCTV terminal unpurchased; support cameras are disabled by design.)");
+                return;
+            }
+
+            CctvModuleConfig.Log?.LogWarning(message);
+        }
+
         private static void LogSupportSpawnPerf(SpawnBudgetContext perf, SpawnRoundResult result)
         {
             if (perf == null || result == null)
@@ -255,11 +279,27 @@ namespace Y4NGZCompany.Facility.Interior
 
             int navmeshPaths = Math.Max(0, InteriorAnchorService.NavMeshPathCalculationCount - perf.NavMeshPathStart);
             int physicsCasts = Math.Max(0, InteriorAnchorService.PhysicsQueryCount - perf.PhysicsQueryStart);
-            CctvModuleConfig.Log?.LogWarning(
+            string message =
                 $"[MoonContracts.Perf] support-spawn total={Math.Max(0, perf.Total.ElapsedMilliseconds):0.00}ms " +
                 $"frames={Math.Max(1, perf.Frames)} startupCpu={Math.Max(0, perf.StartupCpuMilliseconds):0.00}ms " +
                 $"slowestStartup={perf.SlowestStartupStep}:{Math.Max(0, perf.SlowestStartupStepMilliseconds):0.00}ms " +
-                $"navmeshPaths={navmeshPaths} physicsCasts~={physicsCasts} fixtures={result.FixturesSpawned} cameras={result.CamerasTouched}");
+                $"navmeshPaths={navmeshPaths} physicsCasts~={physicsCasts} fixtures={result.FixturesSpawned} cameras={result.CamerasTouched}";
+            // The budgeted coroutine holds every sliced step near the frame budget, so a
+            // healthy round is routine telemetry; only a synchronous startup step big enough
+            // to be a visible hitch earns a warning (#707).
+            // #716 F4 / #707: the Warning tier is a diagnostics signal, so it is gated on the
+            // PerformanceTimingLogging bind. An ordinary session gets the Info line either way.
+            bool warnTierEnabled = SurveillanceBootstrap.Config?.PerformanceTimingLogging?.Value == true;
+            if (warnTierEnabled
+                && (perf.SlowestStartupStepMilliseconds > StartupStepWarningMilliseconds
+                    || perf.StartupCpuMilliseconds > StartupCpuWarningMilliseconds))
+            {
+                CctvModuleConfig.Log?.LogWarning(message);
+            }
+            else
+            {
+                CctvModuleConfig.Log?.LogInfo(message);
+            }
         }
 
         private static void RecordStartupStep(SpawnBudgetContext perf, string stepName, long startTicks)
@@ -333,15 +373,28 @@ namespace Y4NGZCompany.Facility.Interior
         {
             roomsUsed = 0;
             fixturesSpawned = 0;
+            if (!CctvNetworkRole.IsServer())
+                return false;
+
+            bool mainframeEnabled = CctvModuleConfig.MainframeEnabled?.Value ?? true;
+            bool stashesEnabled = CctvModuleConfig.CompanyStashesEnabled?.Value ?? true;
             CleanupRuntimeInstances("pre-spawn");
 
             CctvSupportState.EnsureInitialized();
-            EnsureRuntimePrefabsRegistered();
+            ReportDisabledSupportRecords(mainframeEnabled, stashesEnabled);
+            if (!stashesEnabled)
+                CctvSupportState.ConfigureStashCodesForRound(0);
+            if (!mainframeEnabled && !TrySpawnMainframeAlarmOwner())
+                return false;
+            if (!mainframeEnabled && !stashesEnabled)
+                return true;
+            if (mainframeEnabled)
+                EnsureRuntimePrefabsRegistered();
 
             var supportPoses = new List<PlacementPose>(4);
             var usedTiles = new HashSet<Tile>();
             var occupiedStashTiles = new HashSet<Tile>();
-            Tile mansionMainframeTile = FindCurrentDungeonTileByName("garagetileclone");
+            Tile mansionMainframeTile = mainframeEnabled ? FindCurrentDungeonTileByName("garagetileclone") : null;
             if (mansionMainframeTile != null)
             {
                 CctvModuleConfig.Log?.LogInfo(
@@ -349,7 +402,8 @@ namespace Y4NGZCompany.Facility.Interior
             }
 
             Tile spawnedMainframeTile = null;
-            bool hasExistingMainframe = TryFindExistingMainframe(out MainframeSupport existingMainframe);
+            MainframeSupport existingMainframe = null;
+            bool hasExistingMainframe = mainframeEnabled && TryFindExistingMainframe(out existingMainframe);
             if (hasExistingMainframe)
             {
                 RemoveExtraMainframes(existingMainframe);
@@ -363,7 +417,7 @@ namespace Y4NGZCompany.Facility.Interior
             int desiredStashCount = 0;
             int spawnedAuthoredVaults = 0;
             bool hadAuthoredVaultRecords = false;
-            if (AuthoredInteriorPlacementStore.TryResolvePoses(AuthoredInteriorPlacementKinds.Vault, out List<AuthoredInteriorPlacementPose> authoredVaults)
+            if (stashesEnabled && AuthoredInteriorPlacementStore.TryResolvePoses(AuthoredInteriorPlacementKinds.Vault, out List<AuthoredInteriorPlacementPose> authoredVaults)
                 && TrySelectCompanyStashes(authoredVaults, out List<AuthoredInteriorPlacementPose> selectedVaults, out int targetVaultCount, out string riskLabel))
             {
                 hadAuthoredVaultRecords = true;
@@ -377,7 +431,7 @@ namespace Y4NGZCompany.Facility.Interior
                 var authoredVaultRequest = new InteriorPlacementRequest
                 {
                     Role = InteriorPlacementRole.VaultWallOrFloorSafe,
-                    Footprint = FixtureFootprint.Vault(GetPrefabBackOffset(_vaultPrefab, 0.36f)),
+                    Footprint = GetCompanyStashFootprint(),
                     MinEntranceDistance = 28f,
                     AllowEntranceRoom = false,
                     PreferImportantRoom = true,
@@ -449,19 +503,19 @@ namespace Y4NGZCompany.Facility.Interior
             // Mainframe authored placement takes precedence only when its tile naturally
             // exists in this generated interior. No authored mainframe tile is forced.
             bool spawnedAuthoredMainframe = false;
-            if (!hasExistingMainframe)
+            if (mainframeEnabled && !hasExistingMainframe)
             {
                 spawnedAuthoredMainframe = TrySpawnAuthoredMainframe(supportPoses, usedTiles, ref fixturesSpawned, out spawnedMainframeTile);
             }
 
-            if (!hasExistingMainframe && !spawnedAuthoredMainframe && HasAuthoredMainframeRecordsForCurrentFlow())
+            if (mainframeEnabled && !hasExistingMainframe && !spawnedAuthoredMainframe && HasAuthoredMainframeRecordsForCurrentFlow())
             {
                 CctvModuleConfig.Log?.LogWarning("[MoonContracts.Mainframe] Authored mainframe records exist for this flow, but none resolved on generated tiles; continuing to reviewed/automatic fallback.");
             }
 
             InteriorPlacementPlan mainframePlan = null;
-            float mainframeBackOffset = GetPrefabBackOffset(_mainframePrefab, 0.34f);
-            var mainframeRequest = new InteriorPlacementRequest
+            float mainframeBackOffset = mainframeEnabled ? GetPrefabBackOffset(_mainframePrefab, 0.34f) : 0f;
+            var mainframeRequest = mainframeEnabled ? new InteriorPlacementRequest
             {
                 Role = InteriorPlacementRole.MainframeStandingBackToWall,
                 Footprint = FixtureFootprint.Mainframe(mainframeBackOffset),
@@ -473,13 +527,16 @@ namespace Y4NGZCompany.Facility.Interior
                 RequireImportantRoomWhenReviewed = true,
                 DisallowHallway = true,
                 RequireWallContact = true,
+                RequireStructuralWallPatch = true,
+                RequireDoorwayApproachPath = true,
+                PreferDeadEndRoom = true,
                 RequireFloorContact = true,
                 RequireBodyClearance = true,
                 RequireReachableInteractionPoint = true,
                 DebugLabel = "Mainframe"
-            };
+            } : null;
 
-            if (!hasExistingMainframe && !spawnedAuthoredMainframe && InteriorPlacementService.TryBuildPlan(mainframeRequest, out mainframePlan))
+            if (mainframeEnabled && !hasExistingMainframe && !spawnedAuthoredMainframe && InteriorPlacementService.TryBuildPlan(mainframeRequest, out mainframePlan))
             {
                 PlacementPose mainframePose = mainframePlan.Pose;
                 mainframePose = TagMainframeSupportPose(mainframePose, "automatic-mainframe-");
@@ -491,7 +548,7 @@ namespace Y4NGZCompany.Facility.Interior
                 }
             }
 
-            if (!configuredStashCodes)
+            if (stashesEnabled && !configuredStashCodes)
             {
                 desiredStashCount = ResolveAutomaticCompanyStashTargetCount();
                 EnsureVaultPrefabRegistered();
@@ -522,7 +579,7 @@ namespace Y4NGZCompany.Facility.Interior
                 var vaultRequest = new InteriorPlacementRequest
                 {
                     Role = InteriorPlacementRole.VaultWallOrFloorSafe,
-                    Footprint = FixtureFootprint.Vault(GetPrefabBackOffset(_vaultPrefab, 0.36f)),
+                    Footprint = GetCompanyStashFootprint(),
                     PreferredTile = null,
                     MustDifferFromTile = spawnedMainframeTile,
                     ExcludedTiles = automaticStashExcludedTiles,
@@ -578,7 +635,7 @@ namespace Y4NGZCompany.Facility.Interior
             roomsUsed = usedTiles.Count;
             bool automaticMainframeCovered = EnsureCamerasCoverSupportPoses(supportPoses);
             if (!automaticMainframeCovered)
-                CctvModuleConfig.Log?.LogWarning("[MoonContracts.Mainframe] Mainframe spawned but no CCTV support camera could confirm coverage.");
+                LogMainframeCoverageUnconfirmed();
             return roomsUsed > 0;
         }
 
@@ -590,6 +647,11 @@ namespace Y4NGZCompany.Facility.Interior
             // Unity advances a coroutine synchronously through its first yield. The old first yield
             // sat after all startup discovery, so UpdateRuntime inherited the entire one-shot burst.
             yield return YieldNextFrame(perf);
+            if (!CctvNetworkRole.IsServer())
+                yield break;
+
+            bool mainframeEnabled = CctvModuleConfig.MainframeEnabled?.Value ?? true;
+            bool stashesEnabled = CctvModuleConfig.CompanyStashesEnabled?.Value ?? true;
 
             long startupStep = Stopwatch.GetTimestamp();
             CleanupRuntimeInstances("pre-spawn");
@@ -599,7 +661,18 @@ namespace Y4NGZCompany.Facility.Interior
 
             startupStep = Stopwatch.GetTimestamp();
             CctvSupportState.EnsureInitialized();
-            EnsureRuntimePrefabsRegistered();
+            ReportDisabledSupportRecords(mainframeEnabled, stashesEnabled);
+            if (!stashesEnabled)
+                CctvSupportState.ConfigureStashCodesForRound(0);
+            if (!mainframeEnabled && !TrySpawnMainframeAlarmOwner())
+                yield break;
+            if (!mainframeEnabled && !stashesEnabled)
+            {
+                result.Succeeded = true;
+                yield break;
+            }
+            if (mainframeEnabled)
+                EnsureRuntimePrefabsRegistered();
             RecordStartupStep(perf, "EnsureRuntimeStateAndPrefabs", startupStep);
             if (ShouldYieldFrame(perf))
                 yield return null;
@@ -608,7 +681,7 @@ namespace Y4NGZCompany.Facility.Interior
             var usedTiles = new HashSet<Tile>();
             var occupiedStashTiles = new HashSet<Tile>();
             startupStep = Stopwatch.GetTimestamp();
-            Tile mansionMainframeTile = FindCurrentDungeonTileByName("garagetileclone");
+            Tile mansionMainframeTile = mainframeEnabled ? FindCurrentDungeonTileByName("garagetileclone") : null;
             RecordStartupStep(perf, "FindMansionMainframeTile", startupStep);
             if (mansionMainframeTile != null)
             {
@@ -620,7 +693,8 @@ namespace Y4NGZCompany.Facility.Interior
 
             Tile spawnedMainframeTile = null;
             startupStep = Stopwatch.GetTimestamp();
-            bool hasExistingMainframe = TryFindExistingMainframe(out MainframeSupport existingMainframe);
+            MainframeSupport existingMainframe = null;
+            bool hasExistingMainframe = mainframeEnabled && TryFindExistingMainframe(out existingMainframe);
             if (hasExistingMainframe)
             {
                 RemoveExtraMainframes(existingMainframe);
@@ -638,7 +712,7 @@ namespace Y4NGZCompany.Facility.Interior
             int desiredStashCount = 0;
             int spawnedAuthoredVaults = 0;
             bool hadAuthoredVaultRecords = false;
-            if (AuthoredInteriorPlacementStore.TryResolvePoses(AuthoredInteriorPlacementKinds.Vault, out List<AuthoredInteriorPlacementPose> authoredVaults)
+            if (stashesEnabled && AuthoredInteriorPlacementStore.TryResolvePoses(AuthoredInteriorPlacementKinds.Vault, out List<AuthoredInteriorPlacementPose> authoredVaults)
                 && TrySelectCompanyStashes(authoredVaults, out List<AuthoredInteriorPlacementPose> selectedVaults, out int targetVaultCount, out string riskLabel))
             {
                 hadAuthoredVaultRecords = true;
@@ -652,7 +726,7 @@ namespace Y4NGZCompany.Facility.Interior
                 var authoredVaultRequest = new InteriorPlacementRequest
                 {
                     Role = InteriorPlacementRole.VaultWallOrFloorSafe,
-                    Footprint = FixtureFootprint.Vault(GetPrefabBackOffset(_vaultPrefab, 0.36f)),
+                    Footprint = GetCompanyStashFootprint(),
                     MinEntranceDistance = 28f,
                     AllowEntranceRoom = false,
                     PreferImportantRoom = true,
@@ -708,7 +782,9 @@ namespace Y4NGZCompany.Facility.Interior
                         supportPoses.Add(supportPose);
                         usedTiles.Add(vaultPose.Tile);
                         occupiedStashTiles.Add(vaultPose.Tile);
-                        yield return YieldNextFrame(perf);
+                        // #1271: yield only when the frame budget is spent, not after every fixture.
+                        if (ShouldYieldFrame(perf))
+                            yield return null;
                     }
                     else
                     {
@@ -727,20 +803,30 @@ namespace Y4NGZCompany.Facility.Interior
             }
 
             bool spawnedAuthoredMainframe = false;
-            if (!hasExistingMainframe)
+            if (mainframeEnabled && !hasExistingMainframe)
             {
-                spawnedAuthoredMainframe = TrySpawnAuthoredMainframe(supportPoses, usedTiles, ref fixturesSpawned, out spawnedMainframeTile);
+                Tile authoredMainframeTile = null;
+                IEnumerator authoredMainframe = TrySpawnAuthoredMainframeBudgeted(
+                    supportPoses, usedTiles, () => ShouldYieldFrame(perf), spawned => authoredMainframeTile = spawned);
+                while (authoredMainframe.MoveNext())
+                    yield return authoredMainframe.Current;
+                spawnedMainframeTile = authoredMainframeTile;
+                spawnedAuthoredMainframe = authoredMainframeTile != null;
                 if (spawnedAuthoredMainframe)
-                    yield return YieldNextFrame(perf);
+                {
+                    fixturesSpawned++;
+                    if (ShouldYieldFrame(perf))
+                        yield return null;
+                }
             }
 
-            if (!hasExistingMainframe && !spawnedAuthoredMainframe && HasAuthoredMainframeRecordsForCurrentFlow())
+            if (mainframeEnabled && !hasExistingMainframe && !spawnedAuthoredMainframe && HasAuthoredMainframeRecordsForCurrentFlow())
             {
                 CctvModuleConfig.Log?.LogWarning("[MoonContracts.Mainframe] Authored mainframe records exist for this flow, but none resolved on generated tiles; continuing to reviewed/automatic fallback.");
             }
 
-            float mainframeBackOffset = GetPrefabBackOffset(_mainframePrefab, 0.34f);
-            var mainframeRequest = new InteriorPlacementRequest
+            float mainframeBackOffset = mainframeEnabled ? GetPrefabBackOffset(_mainframePrefab, 0.34f) : 0f;
+            var mainframeRequest = mainframeEnabled ? new InteriorPlacementRequest
             {
                 Role = InteriorPlacementRole.MainframeStandingBackToWall,
                 Footprint = FixtureFootprint.Mainframe(mainframeBackOffset),
@@ -752,13 +838,16 @@ namespace Y4NGZCompany.Facility.Interior
                 RequireImportantRoomWhenReviewed = true,
                 DisallowHallway = true,
                 RequireWallContact = true,
+                RequireStructuralWallPatch = true,
+                RequireDoorwayApproachPath = true,
+                PreferDeadEndRoom = true,
                 RequireFloorContact = true,
                 RequireBodyClearance = true,
                 RequireReachableInteractionPoint = true,
                 DebugLabel = "Mainframe"
-            };
+            } : null;
 
-            if (!hasExistingMainframe && !spawnedAuthoredMainframe)
+            if (mainframeEnabled && !hasExistingMainframe && !spawnedAuthoredMainframe)
             {
                 InteriorPlacementPlan mainframePlan = null;
                 bool mainframePlanBuilt = false;
@@ -779,12 +868,13 @@ namespace Y4NGZCompany.Facility.Interior
                     {
                         fixturesSpawned++;
                         spawnedMainframeTile = mainframePose.Tile;
-                        yield return YieldNextFrame(perf);
+                        if (ShouldYieldFrame(perf))
+                            yield return null;
                     }
                 }
             }
 
-            if (!configuredStashCodes)
+            if (stashesEnabled && !configuredStashCodes)
             {
                 desiredStashCount = ResolveAutomaticCompanyStashTargetCount();
                 EnsureVaultPrefabRegistered();
@@ -815,7 +905,7 @@ namespace Y4NGZCompany.Facility.Interior
                 var vaultRequest = new InteriorPlacementRequest
                 {
                     Role = InteriorPlacementRole.VaultWallOrFloorSafe,
-                    Footprint = FixtureFootprint.Vault(GetPrefabBackOffset(_vaultPrefab, 0.36f)),
+                    Footprint = GetCompanyStashFootprint(),
                     PreferredTile = null,
                     MustDifferFromTile = spawnedMainframeTile,
                     ExcludedTiles = automaticStashExcludedTiles,
@@ -854,7 +944,6 @@ namespace Y4NGZCompany.Facility.Interior
                             usedTiles.Add(vaultPlan.Pose.Tile);
                             automaticStashExcludedTiles.Add(vaultPlan.Pose.Tile);
                         }
-                        yield return YieldNextFrame(perf);
                     }
                     else
                     {
@@ -885,7 +974,7 @@ namespace Y4NGZCompany.Facility.Interior
             while (cameraRoutine.MoveNext())
                 yield return cameraRoutine.Current;
             if (!automaticMainframeCovered)
-                CctvModuleConfig.Log?.LogWarning("[MoonContracts.Mainframe] Mainframe spawned but no CCTV support camera could confirm coverage.");
+                LogMainframeCoverageUnconfirmed();
 
             result.RoomsUsed = roomsUsed;
             result.FixturesSpawned = fixturesSpawned;
@@ -942,8 +1031,11 @@ namespace Y4NGZCompany.Facility.Interior
         private static bool TryFindExistingMainframe(out MainframeSupport existingMainframe)
         {
             existingMainframe = null;
+            if (!(CctvModuleConfig.MainframeEnabled?.Value ?? true))
+                return false;
+
             MainframeSupport active = MainframeSupport.Active;
-            if (active != null && active.gameObject != null && active.gameObject.activeInHierarchy)
+            if (active != null && active.IsPhysicalMainframe && active.gameObject != null && active.gameObject.activeInHierarchy)
             {
                 existingMainframe = active;
                 return true;
@@ -951,7 +1043,7 @@ namespace Y4NGZCompany.Facility.Interior
 
             MainframeSupport candidate = UnityEngine.Object.FindAnyObjectByType<MainframeSupport>(
                 FindObjectsInactive.Exclude);
-            if (candidate != null &&
+            if (candidate != null && candidate.IsPhysicalMainframe &&
                 candidate.gameObject != null &&
                 candidate.gameObject.activeInHierarchy)
             {
@@ -964,8 +1056,7 @@ namespace Y4NGZCompany.Facility.Interior
 
         internal static void RegisterExistingMainframeBeforePlacementRequests()
         {
-            RoundManager round = RoundManager.Instance;
-            if (round == null || !round.IsServer)
+            if (!CctvNetworkRole.IsServer() || !(CctvModuleConfig.MainframeEnabled?.Value ?? true))
                 return;
             if (!TryFindExistingMainframe(out MainframeSupport existingMainframe))
                 return;
@@ -1054,6 +1145,9 @@ namespace Y4NGZCompany.Facility.Interior
             List<PlacementPose> supportPoses,
             HashSet<Tile> usedTiles)
         {
+            if (!CctvNetworkRole.IsServer() || !(CctvModuleConfig.MainframeEnabled?.Value ?? true))
+                return false;
+
             FixtureFootprint footprint = FixtureFootprint.Mainframe(GetPrefabBackOffset(_mainframePrefab, 0.34f));
             const string label = "Company mainframe";
             string source = string.IsNullOrWhiteSpace(placementPose.Source)
@@ -1109,13 +1203,30 @@ namespace Y4NGZCompany.Facility.Interior
 
         private static bool TrySpawnAuthoredMainframe(List<PlacementPose> supportPoses, HashSet<Tile> usedTiles, ref int fixturesSpawned, out Tile spawnedTile)
         {
-            spawnedTile = null;
-            Tile tile;
-            Vector3 worldPosition;
-            Quaternion worldRotation;
-            Vector3 local;
-            string source;
+            Tile tile = null;
+            IEnumerator routine = TrySpawnAuthoredMainframeBudgeted(supportPoses, usedTiles, null, spawned => tile = spawned);
+            while (routine.MoveNext())
+            {
+            }
 
+            spawnedTile = tile;
+            if (tile == null)
+                return false;
+            fixturesSpawned++;
+            return true;
+        }
+
+        /// <summary>#1271. The authored-mainframe spawn as a budgeted routine: it yields between
+        /// rejected candidates when <paramref name="shouldYield"/> reports the frame budget spent
+        /// (a null delegate never yields, which is the synchronous path above). Validation and
+        /// the spawn of the selected candidate still run in one frame, so the pose it validated
+        /// is the pose it reserves. <paramref name="onSpawned"/> receives the tile only on success.</summary>
+        private static IEnumerator TrySpawnAuthoredMainframeBudgeted(
+            List<PlacementPose> supportPoses,
+            HashSet<Tile> usedTiles,
+            Func<bool> shouldYield,
+            Action<Tile> onSpawned)
+        {
             var request = new InteriorPlacementRequest
             {
                 Role = InteriorPlacementRole.MainframeStandingBackToWall,
@@ -1132,44 +1243,44 @@ namespace Y4NGZCompany.Facility.Interior
                 DebugLabel = "AuthoredMainframe"
             };
 
-            PlacementPose placementPose;
-            bool selectedCanonical = TrySelectViableAuthoredMainframe(request, out AuthoredInteriorPlacementPose canonicalPose, out placementPose);
-            if (selectedCanonical)
+            bool selectedCanonical = false;
+            AuthoredInteriorPlacementPose canonicalPose = default;
+            PlacementPose placementPose = default;
+            IEnumerator select = SelectViableAuthoredMainframeBudgeted(request, shouldYield, (pose, supportPose) =>
             {
-                tile = canonicalPose.Tile;
-                worldPosition = canonicalPose.WorldPosition;
-                worldRotation = canonicalPose.WorldRotation;
-                local = canonicalPose.Record != null ? canonicalPose.Record.tileLocalPosition : Vector3.zero;
-                source = string.IsNullOrWhiteSpace(canonicalPose.Source) ? "canonical-authored" : canonicalPose.Source;
-            }
-            else
-            {
-                return false;
-            }
+                selectedCanonical = true;
+                canonicalPose = pose;
+                placementPose = supportPose;
+            });
+            while (select.MoveNext())
+                yield return select.Current;
+
+            if (!selectedCanonical)
+                yield break;
+
+            Tile tile = canonicalPose.Tile;
+            Vector3 worldPosition = canonicalPose.WorldPosition;
+            Quaternion worldRotation = canonicalPose.WorldRotation;
+            Vector3 local = canonicalPose.Record != null ? canonicalPose.Record.tileLocalPosition : Vector3.zero;
+            string source = string.IsNullOrWhiteSpace(canonicalPose.Source) ? "canonical-authored" : canonicalPose.Source;
 
             if (tile == null)
-                return false;
+                yield break;
 
             placementPose = TagMainframeSupportPose(placementPose, "authored-mainframe-");
             if (!TryRegisterMainframePlacement(placementPose, true, supportPoses, usedTiles))
             {
-                if (selectedCanonical)
-                {
-                    AuthoredPlacementRoundReport.RecordResolvedButUnused(
-                        canonicalPose.Record,
-                        "consumer=mainframe reason=reservation-or-spawn-failed");
-                }
-                return false;
+                AuthoredPlacementRoundReport.RecordResolvedButUnused(
+                    canonicalPose.Record,
+                    "consumer=mainframe reason=reservation-or-spawn-failed");
+                yield break;
             }
 
-            fixturesSpawned++;
-            if (selectedCanonical)
-                AuthoredPlacementRoundReport.RecordSpawned(canonicalPose.Record);
+            AuthoredPlacementRoundReport.RecordSpawned(canonicalPose.Record);
             CctvModuleConfig.Log?.LogInfo(
                 $"[MoonContracts.Mainframe] AUTHORED_SPAWN tile='{tile.name}' world=({worldPosition.x:F2},{worldPosition.y:F2},{worldPosition.z:F2}) local=({local.x:F2},{local.y:F2},{local.z:F2}) yaw={worldRotation.eulerAngles.y:F1} source={source}.");
 
-            spawnedTile = tile;
-            return true;
+            onSpawned?.Invoke(tile);
         }
 
         private static bool TrySelectCompanyStashes(
@@ -1234,18 +1345,16 @@ namespace Y4NGZCompany.Facility.Interior
             return WithSupportPoseSource(pose, source);
         }
 
-        private static bool TrySelectViableAuthoredMainframe(
+        private static IEnumerator SelectViableAuthoredMainframeBudgeted(
             InteriorPlacementRequest request,
-            out AuthoredInteriorPlacementPose selected,
-            out PlacementPose placementPose)
+            Func<bool> shouldYield,
+            Action<AuthoredInteriorPlacementPose, PlacementPose> onSelected)
         {
-            selected = default;
-            placementPose = default;
             if (!AuthoredInteriorPlacementStore.TryResolvePoses(AuthoredInteriorPlacementKinds.Mainframe, out List<AuthoredInteriorPlacementPose> candidates)
                 || candidates == null
                 || candidates.Count == 0)
             {
-                return false;
+                yield break;
             }
 
             var compatible = new List<AuthoredInteriorPlacementPose>(candidates.Count);
@@ -1257,7 +1366,7 @@ namespace Y4NGZCompany.Facility.Interior
             }
 
             if (compatible.Count == 0)
-                return false;
+                yield break;
 
             Shuffle(compatible, new System.Random(BuildSelectionSeed("mainframe")));
             for (int i = 0; i < compatible.Count; i++)
@@ -1275,6 +1384,8 @@ namespace Y4NGZCompany.Facility.Interior
                         out PlacementPose candidatePose,
                         candidate.Record))
                 {
+                    if (shouldYield != null && shouldYield())
+                        yield return null;
                     continue;
                 }
 
@@ -1284,14 +1395,11 @@ namespace Y4NGZCompany.Facility.Interior
                         compatible[unusedIndex].Record,
                         "consumer=mainframe reason=seed-selection");
                 }
-                selected = candidate;
-                placementPose = candidatePose;
                 CctvModuleConfig.Log?.LogInfo(
-                    $"[MoonContracts.Mainframe] Selected authored mainframe id='{selected.Record?.objectId ?? "<unknown>"}' from compatible={compatible.Count}.");
-                return true;
+                    $"[MoonContracts.Mainframe] Selected authored mainframe id='{candidate.Record?.objectId ?? "<unknown>"}' from compatible={compatible.Count}.");
+                onSelected(candidate, candidatePose);
+                yield break;
             }
-
-            return false;
         }
 
         private static bool HasAuthoredMainframeRecordsForCurrentFlow()
@@ -1310,6 +1418,9 @@ namespace Y4NGZCompany.Facility.Interior
 
         private static int RollCompanyStashTargetCount(string riskLabel)
         {
+            if (!(CctvModuleConfig.CompanyStashesEnabled?.Value ?? true))
+                return 0;
+
             double oneVaultChance;
             switch (ResolveRiskTier(riskLabel))
             {
@@ -1982,9 +2093,25 @@ namespace Y4NGZCompany.Facility.Interior
             return SpawnVault(pos, rotation, index, room.TileName);
         }
 
+        private static FixtureFootprint GetCompanyStashFootprint()
+        {
+            FixtureFootprint vault = FixtureFootprint.Vault(GetPrefabBackOffset(_vaultPrefab, 0.36f));
+            Vector3 size = vault.Size;
+            size.y = CompanyStashController.BodyHeight;
+            return new FixtureFootprint(
+                vault.LocalFront,
+                vault.LocalBack,
+                vault.LocalUp,
+                size,
+                vault.BackPlaneOffset,
+                vault.BottomOffset,
+                vault.FrontClearance,
+                vault.InteractionHeight);
+        }
+
         private static bool SpawnVault(Vector3 position, Quaternion rotation, int index, string roomLabel)
         {
-            if (_vaultPrefab == null)
+            if (!CctvNetworkRole.IsServer() || !(CctvModuleConfig.CompanyStashesEnabled?.Value ?? true) || _vaultPrefab == null)
                 return false;
 
             if (!CctvSupportState.TryGetAssignedStashCode(index, out int assignedCode))
@@ -1997,7 +2124,7 @@ namespace Y4NGZCompany.Facility.Interior
             if (!FixtureReservationRegistry.TryReserve(
                     reservationLabel,
                     "company-stash-spawn",
-                    FixtureFootprint.Vault(GetPrefabBackOffset(_vaultPrefab, 0.36f)),
+                    GetCompanyStashFootprint(),
                     position,
                     rotation,
                     out FixtureReservationHandle reservation,
@@ -2170,6 +2297,54 @@ namespace Y4NGZCompany.Facility.Interior
 
             go.SetActive(true);
             CctvModuleConfig.Log?.LogDebug($"[MoonContracts] Activated {label ?? "interior support"} runtime clone before network spawn.");
+        }
+
+        private static void EnsureMainframeAlarmOwnerPrefabRegistered()
+        {
+            if (_mainframeAlarmOwnerPrefab != null)
+                return;
+
+            var prefab = new GameObject("MoonContracts_MainframeAlarmOwnerPrefab");
+            // Inactive before AddComponent: the template must never register a target or
+            // become MainframeSupport.Active. Only its spawned clone owns round state.
+            prefab.SetActive(false);
+            prefab.hideFlags = HideFlags.HideAndDontSave;
+            NetworkObject netObject = prefab.AddComponent<NetworkObject>();
+            netObject.SynchronizeTransform = false;
+            prefab.AddComponent<MainframeSupport>().ConfigureAsAlarmOwner();
+            CctvFixtureAssets.AssignStableNetworkHash(netObject, "InteriorSupport", prefab.name);
+            RegisterRuntimePrefab(prefab);
+            _mainframeAlarmOwnerPrefab = prefab;
+        }
+
+        private static bool TrySpawnMainframeAlarmOwner()
+        {
+            if (!CctvNetworkRole.IsServer())
+                return false;
+
+            EnsureMainframeAlarmOwnerPrefabRegistered();
+            GameObject owner = null;
+            try
+            {
+                owner = UnityEngine.Object.Instantiate(_mainframeAlarmOwnerPrefab);
+                owner.SetActive(true);
+                NetworkObject netObject = owner.GetComponent<NetworkObject>();
+                netObject.Spawn();
+                if (!netObject.IsSpawned)
+                    throw new InvalidOperationException("NetworkObject did not enter the spawned state.");
+
+                // Lifecycle tracking only: no physical fixture count, support pose,
+                // placement reservation, camera promotion or navmesh work.
+                RuntimeInstances.Add(owner);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (owner != null)
+                    UnityEngine.Object.Destroy(owner);
+                CctvModuleConfig.Log?.LogWarning($"[MoonContracts] Failed to spawn mainframe alarm owner: {ex.Message}");
+                return false;
+            }
         }
 
         private static void EnsureRuntimePrefabsRegistered()
@@ -2694,24 +2869,24 @@ namespace Y4NGZCompany.Facility.Interior
             var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
             body.name = "CompanyStashBody";
             body.transform.SetParent(root.transform, false);
-            body.transform.localPosition = new Vector3(0f, 0.95f, -0.08f);
-            body.transform.localScale = new Vector3(1.05f, 1.9f, 0.42f);
+            body.transform.localPosition = new Vector3(0f, 0.95f * CompanyStashController.BodyHeightMultiplier, -0.08f);
+            body.transform.localScale = new Vector3(1.05f, 1.9f * CompanyStashController.BodyHeightMultiplier, 0.42f);
             TintRenderer(body, new Color(0.24f, 0.26f, 0.28f), FixtureBodyEmission);
             DestroyCollider(body);
 
             var leftDoor = GameObject.CreatePrimitive(PrimitiveType.Cube);
             leftDoor.name = "door-l";
             leftDoor.transform.SetParent(root.transform, false);
-            leftDoor.transform.localPosition = new Vector3(-0.265f, 0.95f, 0.145f);
-            leftDoor.transform.localScale = new Vector3(0.5f, 1.78f, 0.055f);
+            leftDoor.transform.localPosition = new Vector3(-0.265f, 0.95f * CompanyStashController.BodyHeightMultiplier, 0.145f);
+            leftDoor.transform.localScale = new Vector3(0.5f, 1.78f * CompanyStashController.BodyHeightMultiplier, 0.055f);
             TintRenderer(leftDoor, new Color(0.18f, 0.2f, 0.22f), FixtureBodyEmission);
             DestroyCollider(leftDoor);
 
             var rightDoor = GameObject.CreatePrimitive(PrimitiveType.Cube);
             rightDoor.name = "door-r";
             rightDoor.transform.SetParent(root.transform, false);
-            rightDoor.transform.localPosition = new Vector3(0.265f, 0.95f, 0.145f);
-            rightDoor.transform.localScale = new Vector3(0.5f, 1.78f, 0.055f);
+            rightDoor.transform.localPosition = new Vector3(0.265f, 0.95f * CompanyStashController.BodyHeightMultiplier, 0.145f);
+            rightDoor.transform.localScale = new Vector3(0.5f, 1.78f * CompanyStashController.BodyHeightMultiplier, 0.055f);
             TintRenderer(rightDoor, new Color(0.19f, 0.21f, 0.23f), FixtureBodyEmission);
             DestroyCollider(rightDoor);
 
@@ -2760,7 +2935,18 @@ namespace Y4NGZCompany.Facility.Interior
             lootAnchor.transform.localPosition = new Vector3(0f, 0.72f, 0.04f);
             lootAnchor.transform.localRotation = Quaternion.identity;
 
+            int firstFrameChild = root.transform.childCount;
             AddFixtureOutlineFrame(root, new Vector3(1.18f, 2.0f, 0.62f));
+            for (int i = firstFrameChild; i < root.transform.childCount; i++)
+            {
+                Transform bar = root.transform.GetChild(i);
+                Vector3 position = bar.localPosition;
+                Vector3 scale = bar.localScale;
+                position.y *= CompanyStashController.BodyHeightMultiplier;
+                scale.y *= CompanyStashController.BodyHeightMultiplier;
+                bar.localPosition = position;
+                bar.localScale = scale;
+            }
         }
 
         private static void CreateCompanyStashKey(Transform parent, string name, Vector3 localPosition, Vector3 localScale)

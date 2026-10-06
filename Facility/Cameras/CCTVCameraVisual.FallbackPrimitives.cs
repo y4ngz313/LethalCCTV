@@ -58,7 +58,52 @@ namespace Y4NGZCompany.Facility.Cameras
             DisableShadows(lens);
         }
 
+        // A snap may sit at most this far from the surface point placement validated (#1313).
+        private const float ValidatedSnapToleranceM = 0.05f;
+
         private static bool TryResolveSnap(CCTVCamera holder, out VisualSnap snap)
+        {
+            bool resolved = TryResolveRaycastSnap(holder, out snap);
+
+            // #1313: a holder placed on a validated structural surface knows exactly where
+            // that surface is. The visual must not mount anywhere else (a rail, a pipe or a
+            // neighbouring wall a raycast happened to find): when the resolved snap strays
+            // from the validated point, or nothing resolved, build the snap at the validated
+            // point facing the stored normal.
+            Vector3 normal = holder.PlacementSurfaceNormal;
+            float surfaceDistance = holder.PlacementSurfaceDistanceM;
+            Transform t = holder.transform;
+            if (normal.sqrMagnitude > 1e-6f && surfaceDistance > 0f)
+            {
+                normal.Normalize();
+                Vector3 validatedPoint = t.position - normal * surfaceDistance;
+                float deviation = resolved ? Vector3.Distance(snap.SurfacePoint, validatedPoint) : float.PositiveInfinity;
+                if (deviation <= ValidatedSnapToleranceM)
+                    return true;
+
+                SurveillanceBootstrap.Log?.LogInfo(
+                    $"[LethalCCTV][CameraVisual] VISUAL_SNAP_CLAMPED cam={holder.CameraIndex:D2} " +
+                    $"deviation={(resolved ? deviation.ToString("F3") + "m" : "no-snap")} " +
+                    $"resolved={(resolved ? snap.Source : "none")} surfaceDist={surfaceDistance:F2}m");
+                snap = CreateSnap(t.position, t.rotation, validatedPoint, normal, surfaceDistance, "validated-surface");
+                return true;
+            }
+
+            if (!resolved)
+            {
+                // No probe found a wall/ceiling and no validated surface is known:
+                // fail instead of synthesizing a surface point behind the camera.
+                // The caller (TryBuild) already handles false by skipping the
+                // visual with its own log line — a camera with no visible mount is
+                // preferable to a plate floating in mid-air.
+                SurveillanceBootstrap.Log?.LogInfo(
+                    $"[LethalCCTV][CameraVisual] no coherent mount surface for cam={holder.CameraIndex:D2} " +
+                    $"within {ResolveMaxSnapOffset():F2}m (storedNormal={(normal.sqrMagnitude > 1e-6f ? "miss" : "unset")}); refusing snap.");
+            }
+            return resolved;
+        }
+
+        private static bool TryResolveRaycastSnap(CCTVCamera holder, out VisualSnap snap)
         {
             snap = default;
             Transform t = holder.transform;
@@ -89,9 +134,11 @@ namespace Y4NGZCompany.Facility.Cameras
                     return true;
                 }
 
-                Vector3 supportPoint = viewPos - storedNormal * EstimatedSurfaceInsetM;
-                snap = CreateSnap(viewPos, t.rotation, supportPoint, storedNormal, EstimatedSurfaceInsetM, "stored-normal");
-                return true;
+                // A stored normal whose re-cast finds no aligned surface must
+                // NOT synthesize a support point — that fabricates a mid-air
+                // plate. Fall through to the broad probe; -storedNormal is its
+                // first direction, so a real surface slightly off the stored
+                // alignment is still found before any other direction wins.
             }
 
             BuildProbeDirections(holder, t);
@@ -129,27 +176,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 return true;
             }
 
-            Vector3 fallbackOutward = ResolveFallbackOutward(holder, t);
-            Vector3 fallbackSurfacePoint = viewPos - fallbackOutward * EstimatedSurfaceInsetM;
-            snap = CreateSnap(
-                viewPos,
-                t.rotation,
-                fallbackSurfacePoint,
-                fallbackOutward,
-                EstimatedSurfaceInsetM,
-                "camera-forward-fallback");
-            return true;
-        }
-
-        private static Vector3 ResolveFallbackOutward(CCTVCamera holder, Transform transform)
-        {
-            if (holder != null && holder.MountMode == CameraMountMode.Ceiling)
-                return Vector3.down;
-
-            Vector3 outward = transform != null ? transform.forward : Vector3.forward;
-            if (outward.sqrMagnitude < 1e-6f)
-                outward = Vector3.forward;
-            return outward.normalized;
+            return false;
         }
 
         private static VisualSnap CreateSnap(
@@ -229,8 +256,9 @@ namespace Y4NGZCompany.Facility.Cameras
             go.transform.localRotation = Quaternion.identity;
             go.transform.localScale = localScale;
 
+            // Immediate for the same reason as the bundled lens dot (#1271).
             Collider collider = go.GetComponent<Collider>();
-            if (collider != null) Object.Destroy(collider);
+            if (collider != null) Object.DestroyImmediate(collider);
 
             Renderer renderer = go.GetComponent<Renderer>();
             if (renderer != null)
@@ -245,39 +273,10 @@ namespace Y4NGZCompany.Facility.Cameras
             return go;
         }
 
-        private void NormalizeImportedVisualPlacement(GameObject instance, float scale)
-        {
-            if (instance == null || _visualRoot == null) return;
-
-            if (!TryComputeLocalRendererBounds(instance, _visualRoot.transform, out Bounds localBounds))
-                return;
-
-            float currentMax = Mathf.Max(localBounds.size.x, Mathf.Max(localBounds.size.y, localBounds.size.z));
-            float targetMax = TargetImportedCameraMaxDimensionM * Mathf.Max(0.05f, scale);
-            if (currentMax > 0.001f && Mathf.Abs(currentMax - targetMax) > 0.01f)
-            {
-                float factor = targetMax / currentMax;
-                instance.transform.localScale *= factor;
-                if (!TryComputeLocalRendererBounds(instance, _visualRoot.transform, out localBounds))
-                    return;
-            }
-
-            Vector3 localPosition = instance.transform.localPosition;
-            localPosition.z += SurfaceClearanceM - localBounds.min.z;
-            instance.transform.localPosition = localPosition;
-        }
-
-        // Shared by the bundled auto-scale/seat pass and CctvBreakableCamera's hitbox
-        // sizing. Renderers that are disabled, on an inactive GameObject, or that report
-        // a degenerate (zero-extent) box are skipped: SuppressBundledFloatingDotRing
-        // deactivates the "rotatingcamera_plane" dot ring, and an inactive renderer can
-        // report a zero-size box sitting at the world origin, which would drag the union
-        // tens of metres away from the prop.
-        //
-        // The per-renderer 8-corner fold is deliberate rather than "union the world AABBs
-        // then fold once": the union-first form is strictly more conservative under
-        // rotation and would change the bundled auto-scale factor this helper already
-        // feeds. Renderer counts here are single digits.
+        // CctvBreakableCamera uses this for hitbox sizing. Skip disabled, inactive
+        // and degenerate renderers so a zero-size box at the world origin cannot
+        // drag the union away from the prop. Fold each renderer's eight corners
+        // separately; unioning world AABBs first overestimates rotated geometry.
         internal static bool TryComputeLocalRendererBounds(GameObject root, Transform localRoot, out Bounds bounds)
         {
             bounds = default;
@@ -366,10 +365,11 @@ namespace Y4NGZCompany.Facility.Cameras
         {
             if (instance == null) return;
 
+            // Immediate for the same reason as the bundled lens dot (#1271).
             Collider[] colliders = instance.GetComponentsInChildren<Collider>(true);
             for (int i = 0; i < colliders.Length; i++)
             {
-                if (colliders[i] != null) Object.Destroy(colliders[i]);
+                if (colliders[i] != null) Object.DestroyImmediate(colliders[i]);
             }
 
             Light[] lights = instance.GetComponentsInChildren<Light>(true);
@@ -391,21 +391,6 @@ namespace Y4NGZCompany.Facility.Cameras
             }
 
             RepairImportedMaterials(instance);
-        }
-
-        private static bool IsBundledHeadRenderer(Renderer renderer, float largestVolume)
-        {
-            if (renderer == null) return false;
-
-            string descriptor = BuildDescriptor(renderer);
-            if (HasPathSegment(renderer, "base") || HasPathSegment(renderer, "stem"))
-                return false;
-
-            if (HasPathSegment(renderer, "camera") ||
-                ContainsAny(descriptor, "camerajoint", "cameraendjoint", "camera_map", "lens", "hood", "housing", "case"))
-                return true;
-
-            return largestVolume > 0.0001f && EstimateRendererVolume(renderer) >= largestVolume * 0.35f;
         }
 
         private static string BuildDescriptor(Renderer renderer)
@@ -473,13 +458,6 @@ namespace Y4NGZCompany.Facility.Cameras
             }
 
             return false;
-        }
-
-        private static float EstimateRendererVolume(Renderer renderer)
-        {
-            if (renderer == null) return 0f;
-            Vector3 size = renderer.bounds.size;
-            return Mathf.Abs(size.x * size.y * size.z);
         }
 
         private readonly struct VisualSnap

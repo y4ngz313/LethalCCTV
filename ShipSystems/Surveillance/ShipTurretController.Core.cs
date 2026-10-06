@@ -10,6 +10,7 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.Rendering.HighDefinition;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Facility.Cameras;
 
 namespace Y4NGZCompany.ShipSystems.Surveillance
 {
@@ -38,6 +39,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const float CameraRecoilPitch = -3.4f;
         private const float EnemyShotRadius = 0.72f;
         private const float EnemyPriorityLeeway = 1.15f;
+        private const float TurretInteractiveWindowSeconds = 0.15f;
 
         private static readonly Dictionary<ulong, float> ServerNextShotAt = new Dictionary<ulong, float>();
         private static readonly RaycastHit[] ShotHits = new RaycastHit[48];
@@ -168,6 +170,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             bool shouldExist = IsUnlocked || _placementActive;
             if (!shouldExist)
             {
+                CctvRenderScheduler.Cancel(CctvRenderClient.Turret);
                 DestroyTurret();
                 return;
             }
@@ -180,7 +183,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (MonitorFocus.IsFocused && MonitorFocus.IsTurretPageActive)
             {
-                RenderView();
+                RequestView();
+            }
+            else
+            {
+                CctvRenderScheduler.Cancel(CctvRenderClient.Turret);
             }
         }
 
@@ -438,11 +445,32 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
         }
 
-        private static void RenderView()
+        /// <summary>
+        /// #1219 G4. The turret view renders at the configured feed rate through
+        /// CctvRenderScheduler; aiming, zooming and recoil request the capped dirty bypass so
+        /// the view keeps up with input without claiming every frame.
+        /// </summary>
+        private static void RequestView()
         {
             if (_camera == null || _renderTexture == null) return;
+            float now = Time.unscaledTime;
+            bool interacting = now - _lastRotateAt < TurretInteractiveWindowSeconds
+                || now - _lastZoomAt < TurretInteractiveWindowSeconds
+                || GetCurrentRecoil01() > 0f;
+            CctvRenderScheduler.Request(
+                CctvRenderClient.Turret,
+                QuadCameraAssignment.ResolveActiveFeedIntervalSeconds(),
+                interacting);
+        }
+
+        /// <summary>CctvRenderScheduler callback for <see cref="CctvRenderClient.Turret"/>.</summary>
+        internal static bool RenderScheduledView()
+        {
+            if (_camera == null || _renderTexture == null) return false;
+            if (!MonitorFocus.IsFocused || !MonitorFocus.IsTurretPageActive) return false;
             _camera.targetTexture = _renderTexture;
             _camera.Render();
+            return true;
         }
 
         private static void SetStatus(string status, float seconds)

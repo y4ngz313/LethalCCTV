@@ -193,39 +193,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             SetBool(RadarLookHash, false);
             SetInt(ActiveSlotHash, MonitorFocus.ActiveSlot);
             SetInt(ActionButtonHash, 0);
-            if (enterFlourish && _controllerApplied)
-            {
-                FireTrigger(EnterHash);
-                if (_isLocal)
-                {
-                    _handDriveEnterActive = true;
-                    _handDriveEnterStartedAt = Time.unscaledTime;
-                    _handDriveContactFired = false;
-                    _handDriveEnterLogged = false;
-                    _handDriveLeverGripCaptureAttempted = false;
-                    _handDriveLeverGripCaptured = false;
-                    _handDriveMovingLever = null;
-                    _handDriveLeverGripLocalPosition = Vector3.zero;
-                    _handDriveLeverGripLocalRotation = Quaternion.identity;
-                    _handDriveLeverNeutralGripFrame = null;
-                    _handDriveLeverNeutralGripFramePosition = Vector3.zero;
-                    _handDriveLeverNeutralGripFrameRotation = Quaternion.identity;
-                    _handDriveLeverHandoffPosition = Vector3.zero;
-                    _handDriveLeverHandoffRotation = Quaternion.identity;
-                    _handDriveLeverHandoffPoseCaptured = false;
-                    _handDriveLeverFirstFollowLogged = false;
-                    _leverLeftShoulderBlend = 0f;
-                    _leverLeftShoulderFullOffsetLogged = false;
-                    _handTraceEnabled = true;
-                }
-            }
-            else
-            {
-                StartDirectOperatorIdlePose();
-            }
+            InitializeOperatorPose();
             ApplyOperatorAnimatorOverrides();
-            if (_handDriveEnterActive)
-                ApplyEnterHandDrive();
             SurveillanceBootstrap.Log?.LogInfo(
                 $"[LethalCCTV] Operator anim session began: scope={(_isLocal ? "local" : "remote")}, " +
                 $"player={FormatPlayerForLog(Player)}, controllerApplied={_controllerApplied}, " +
@@ -257,10 +226,27 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _animator = useDedicatedLocalViewmodel || Player == null
                 ? null
                 : Player.playerBodyAnimator;
+            _apiRightLastValid = false;
+            _apiLastPressWindow = -1f;
+            _apiEnterEvaluatedClipSeconds = 0f;
+            _apiEnterPressRotationResolved = false;
+            _apiEnterIndexTip = null;
+            _apiEnterSpeedOwned = _animator != null;
+            if (_apiEnterSpeedOwned)
+            {
+                _apiSavedAnimatorSpeed = _animator.speed;
+                // Local entry is evaluated before the camera from its exact clock.
+                // A fixed speed alone lets finger/body animation run ahead on hitches.
+                _animator.speed = _isLocal ? 0f : _apiSavedAnimatorSpeed *
+                    CCTVOperatorInteractionsBridge.EnterClipLengthSeconds / MonitorFocus.OperatorEnterDurationSeconds;
+            }
             // The presenter has already swapped the CCTV controller onto
             // playerBodyAnimator (TryStart precedes this call), so caching here
             // picks up the controller's JoystickX/Y floats for SetFloat.
             CacheParameters(_animator);
+            CacheCctvLayerIndices();
+            _buttonPressLayerUntil = 0f;
+            SetLayerWeight(_buttonPressLayer, 0f);
             _apiLeverControlReachAssistSmoothed = 0f;
             _apiLeverControlReachAssistLastDirection = Vector3.zero;
             _apiLeverControlReachAssistLogged = false;
@@ -297,6 +283,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 SyncApiShoulderCapPlugs();
             }
 
+            InitializeOperatorPose();
             SurveillanceBootstrap.Log?.LogInfo(
                 $"[LethalCCTV][ApiPort] session_started scope={(_isLocal ? "local" : "remote")} " +
                 $"presentation={(useDedicatedLocalViewmodel ? "dedicated-viewmodel" : "world-body")} " +

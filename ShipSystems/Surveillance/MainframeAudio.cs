@@ -6,6 +6,7 @@ using BepInEx;
 using UnityEngine;
 using UnityEngine.Networking;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 
 namespace Y4NGZCompany.ShipSystems.Surveillance
 {
@@ -108,8 +109,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private void OnDisable()
         {
             StopIdle();
+            // #716 E13: the fan is a sustained loop, so it winds down rather than clicking off.
             if (_fanLoopSource != null && _fanLoopSource.isPlaying)
-                _fanLoopSource.Stop();
+                CctvAudioFade.StopLoop(_fanLoopSource);
         }
 
         private void OnDestroy()
@@ -233,8 +235,17 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private void StartFanLoop()
         {
-            if (_fanLoopSource == null || _fanLoop == null || _fanLoopSource.isPlaying)
+            if (_fanLoopSource == null || _fanLoop == null)
                 return;
+
+            // #716 E13: a re-enable landing inside the wind-down ramp must claim the source
+            // back, otherwise the ramp still in flight would stop the loop it just restarted.
+            CctvAudioFade.CancelFade(_fanLoopSource);
+            if (_fanLoopSource.isPlaying)
+            {
+                _fanLoopSource.volume = FanLoopVolume;
+                return;
+            }
 
             _fanLoopSource.clip = _fanLoop;
             _fanLoopSource.volume = FanLoopVolume;

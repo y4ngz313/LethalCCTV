@@ -149,7 +149,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 _bypassOwner = null;
             }
 
-            // Nested renders (WakeRenderSlot inside another pass, OBC) must
+            // Nested renders (a scheduled feed snapshot inside another pass, OBC) must
             // not double-enter: the outer pass owns the restore.
             _bypassDepth++;
             _bypassFrame = frame;

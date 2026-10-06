@@ -60,7 +60,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             for (int i = 0; i < mainframes.Length; i++)
             {
                 MainframeSupport mainframe = mainframes[i];
-                if (mainframe != null && mainframe.isActiveAndEnabled)
+                if (mainframe != null && mainframe.isActiveAndEnabled && mainframe.IsPhysicalMainframe)
                     Markers.Add(new MarkerSnapshot(mainframe.transform, MarkerKind.Mainframe));
             }
 

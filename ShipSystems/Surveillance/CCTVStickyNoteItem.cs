@@ -19,7 +19,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     /// taped top corner (14 tris), and its material is already the HDRP/Lit
     /// alpha-clip paper setup. Cloning that material rather than authoring one
     /// sidesteps the whole HDRP-shader-in-an-AssetBundle hazard documented in
-    /// docs/ASSET_PIPELINE.md, and means the only asset this mod ships for the
+    /// docs/assets/README.md, and means the only asset this mod ships for the
     /// note is one embedded PNG — no bundle, no Unity round-trip.
     /// </summary>
     internal static class CCTVStickyNoteItem

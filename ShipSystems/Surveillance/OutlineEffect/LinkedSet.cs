@@ -35,14 +35,21 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             return _dictionary.ContainsKey(item);
         }
 
-        public IEnumerator<T> GetEnumerator()
+        // Struct enumerator: the outline passes walk this set every rendered frame, and the boxed
+        // IEnumerator<T> allocated on each walk.
+        public LinkedList<T>.Enumerator GetEnumerator()
+        {
+            return _list.GetEnumerator();
+        }
+
+        IEnumerator<T> IEnumerable<T>.GetEnumerator()
         {
             return _list.GetEnumerator();
         }
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return GetEnumerator();
+            return _list.GetEnumerator();
         }
     }
 }

@@ -29,7 +29,15 @@ namespace Y4NGZCompany.Facility.Security
         // standing in the same cone, who is just as detected.
         public bool PresentationSeesLocalPlayer;
 
-        public bool Eligible => CameraComponent != null && Transform != null && !IsBroken && HasAlarmFixture;
+        /// <summary>
+        /// Non-null when a standing rule keeps this camera out of the security rotation for the
+        /// round (#735: <see cref="CctvMainEntranceTileRule.ExclusionReason"/>). Unlike a broken
+        /// camera it still streams and aims; it simply never hunts.
+        /// </summary>
+        public string SecurityExclusionReason;
+
+        public bool Eligible => CameraComponent != null && Transform != null && !IsBroken && HasAlarmFixture
+            && string.IsNullOrEmpty(SecurityExclusionReason);
 
         /// <summary>
         /// The presentation-facing "is this camera hunting me right now" flag (#563).

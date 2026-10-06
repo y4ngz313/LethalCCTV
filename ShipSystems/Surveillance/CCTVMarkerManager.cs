@@ -39,7 +39,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static readonly HashSet<int> _seenIds = new HashSet<int>();
         private static int _nextMarkerId;
 
-        internal static bool HasActiveMarkers => _markers.Count > 0;
+        internal static bool HasActiveMarkers => _markers.Count > 0 || CctvSquadPing.HasActivePings;
 
         private sealed class MarkerVisual
         {
@@ -61,6 +61,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void Initialize()
         {
+            CctvSquadPing.Initialize();
             if (_root != null) return;
 
             _root = new GameObject("LethalCCTV_WorldMarkers");
@@ -90,6 +91,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void Shutdown()
         {
+            CctvSquadPing.Shutdown();
             ClearAll();
             _message?.ClearSubscriptions();
             _message = null;
@@ -104,6 +106,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void ClearAll()
         {
+            CctvSquadPing.Clear();
             for (int i = 0; i < _markers.Count; i++)
             {
                 if (_markers[i]?.Root != null)
@@ -147,6 +150,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void Tick()
         {
+            CctvSquadPing.Tick();
             if (_root == null) return;
 
             Camera camera = ResolveGameplayCamera();
@@ -235,7 +239,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (data.Kind == 0)
             {
-                CCTVScanGlowManager.MarkScanTarget(data.Position, data.Radius, data.ColorKind, data.Lifetime);
+                CctvTargetCache.Invalidate();
             }
         }
 

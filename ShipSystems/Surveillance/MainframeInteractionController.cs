@@ -3,6 +3,7 @@ using GameNetcodeStuff;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 
 using Y4NGZCompany.Facility.Mainframe;
 namespace Y4NGZCompany.ShipSystems.Surveillance
@@ -12,8 +13,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const float InteractRange = 4.0f;
         private const float StandRange = 2.45f;
         private const float AimDot = 0.76f;
-        private const string HackPrompt = "[E] Hack Mainframe";
-        private const string UsePrompt = "[E] Use Mainframe";
+        // #716 E7: vanilla writes its interact prompts action-first with the key last, so these
+        // no longer read "[E] Hack Mainframe". The key itself is resolved at display time by
+        // CctvInteractKey rather than written as a placeholder: this controller assigns
+        // player.cursorTip.text directly and writes a HUD control-tip line, and neither surface
+        // gets the game's "[LMB]" substitution - that only happens when the game copies an
+        // InteractTrigger's hoverTip. A placeholder here would reach the player as literal
+        // "[LMB]" text. Both surfaces therefore share one string, and both follow a rebind,
+        // which is honest: activation below accepts the bound Interact action.
+        private const string HackAction = "Hack mainframe";
+        private const string UseAction = "Use mainframe";
         private const string LockoutPrompt = "MAINFRAME LOCKOUT";
 
         private MainframeSupport _mainframe;
@@ -27,6 +36,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private bool _canUseThisFrame;
         private string _capturedTipText;
         private string _activePrompt;
+        // #716 E7: the exact string last written to the cursor tip. HideHoverCursor only clears
+        // the tip when it still holds our text, so it has to compare against what was actually
+        // written - not against a freshly built prompt, which can differ once the interact key
+        // is rebound, and not against the control tip's field, which HideHoverTip nulls first.
+        private string _activeCursorPrompt;
         private PlayerControllerB _lastPlayer;
         private MainframeInteractionSession _session;
         private bool _missingAnchorLogged;
@@ -62,8 +76,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (canUse)
             {
-                string prompt = CurrentPrompt();
-                ShowHoverTip(prompt);
+                ShowHoverTip(CurrentPrompt());
                 if (IsInteractPressed())
                 {
                     HideHoverTip();
@@ -154,11 +167,18 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             return Vector3.Dot(toPlayer, front.normalized) >= -0.15f;
         }
 
+        /// <summary>
+        /// The prompt both the cursor tip and the HUD control-tip line show. Built rather than
+        /// stored because the key comes from the player's live binding; the lockout notice
+        /// names no key and so needs no token.
+        /// </summary>
         private string CurrentPrompt()
         {
             if (_mainframe != null && _mainframe.IsLockedOut)
                 return LockoutPrompt;
-            return _mainframe != null && _mainframe.IsHacked ? UsePrompt : HackPrompt;
+
+            string action = _mainframe != null && _mainframe.IsHacked ? UseAction : HackAction;
+            return $"{action} : {CctvInteractKey.Token()}";
         }
 
         private void Activate(PlayerControllerB player)
@@ -333,7 +353,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (player.cursorTip != null)
                 player.cursorTip.text = prompt;
             _cursorActive = true;
-            _activePrompt = prompt;
+            _activeCursorPrompt = prompt;
         }
 
         private void HideHoverCursor(PlayerControllerB player)
@@ -343,12 +363,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (player != null)
             {
-                if (player.cursorTip != null && string.Equals(player.cursorTip.text, _activePrompt, StringComparison.Ordinal))
+                if (player.cursorTip != null && string.Equals(player.cursorTip.text, _activeCursorPrompt, StringComparison.Ordinal))
                     player.cursorTip.text = string.Empty;
                 if (player.cursorIcon != null && player.cursorIcon.sprite == player.grabItemIcon)
                     player.cursorIcon.enabled = false;
             }
 
+            _activeCursorPrompt = null;
             _cursorActive = false;
         }
 

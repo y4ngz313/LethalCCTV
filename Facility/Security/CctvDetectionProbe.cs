@@ -1,5 +1,6 @@
 using GameNetcodeStuff;
 using UnityEngine;
+using Y4NGZCompany.Core.Compat;
 
 namespace Y4NGZCompany.Facility.Security
 {
@@ -46,13 +47,19 @@ namespace Y4NGZCompany.Facility.Security
             return player != null;
         }
 
+        // #1159: the single per-player gate the whole detection sweep passes through, so the
+        // debug mob-ignore is applied here instead of at the alarm, the tracker and the
+        // spotting alert separately. It is tested last: the vanilla flags are field reads and
+        // the ignore lookup is a latched delegate that is null on every profile without
+        // Y4NGZDebugTools.
         private static bool IsValidPlayer(PlayerControllerB player)
         {
             return player != null &&
                    player.isPlayerControlled &&
                    !player.isPlayerDead &&
                    !player.isInElevator &&
-                   !player.isInHangarShipRoom;
+                   !player.isInHangarShipRoom &&
+                   !MobIgnoreBridge.IsIgnored(player.actualClientId);
         }
 
         private static bool CanSeePlayer(Transform camera, PlayerControllerB player, out float distanceSqr)

@@ -69,9 +69,10 @@ namespace Y4NGZCompany.Facility.Cameras
         // the placement diagnostic — a tile with this reason was NOT
         // chosen by the selector, it was inserted by the additive layer.
         EntrancePromotion,
-        // Post-cap apparatus-room coverage. The vanilla LungProp is resolved from
-        // the generated scene and mapped back to its DunGen tile; the same target is
-        // also carried into semantic aiming so the promoted camera watches it.
+        // Post-cap apparatus-room coverage. #1283: the apparatus position is read
+        // from the tiles' SpawnSyncedObject markers inside OnFinishedGeneratingDungeon,
+        // before the LungProp itself spawns, and mapped back to its DunGen tile; the
+        // same target is also carried into semantic aiming so the promoted camera watches it.
         ApparatusPromotion,
         // Post-cap mainframe-room coverage guarantee. The mainframe is an
         // authored injected tile (MainframeAuthoredTileMarker); the CCTV wall

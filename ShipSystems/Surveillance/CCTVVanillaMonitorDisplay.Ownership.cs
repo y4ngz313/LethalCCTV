@@ -237,6 +237,33 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         internal static bool IsCctvModeActive => _cctvModeActive;
 
         /// <summary>
+        /// #776. True when one of CCTV's screen bindings currently owns
+        /// <paramref name="renderer"/>'s material slot <paramref name="materialIndex"/>.
+        /// OpenBodyCamsCompat asks before it "restores" OBC's original material into a
+        /// slot, because under GeneralImprovements OBC's default screen is the same big
+        /// right screen CCTV's automatic radar claims.
+        /// </summary>
+        internal static bool TryDescribeOwnedScreenSlot(Renderer renderer, int materialIndex, out string label)
+        {
+            label = null;
+            if (renderer == null || materialIndex < 0)
+                return false;
+
+            if (OwnsSlot(_lowerLeftBinding, renderer, materialIndex)) { label = "lower-left"; return true; }
+            if (OwnsSlot(_lowerRightBinding, renderer, materialIndex)) { label = "lower-right"; return true; }
+            if (OwnsSlot(_lowerRightAuxBinding, renderer, materialIndex)) { label = "lower-right-aux"; return true; }
+            return false;
+        }
+
+        private static bool OwnsSlot(ScreenBinding binding, Renderer renderer, int materialIndex)
+        {
+            return binding != null
+                   && binding.IsBound
+                   && ReferenceEquals(binding.Renderer, renderer)
+                   && binding.MaterialIndex == materialIndex;
+        }
+
+        /// <summary>
         /// Cached "is the monitor wall on-screen for the local player" flag from
         /// the last Tick (CCTVVanillaMonitorDisplay.Tick.cs), reused by observer
         /// CCTVCameraThrottle instances so per-camera Update calls don't redo the
@@ -268,7 +295,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (active)
             {
                 _compositorDirty = true;
-                _nextCompositorRenderAt = 0f;
                 _nextReassertAt = 0f;
                 _nextFullSuppressionAt = 0f;
                 _nextFastMaterialVerifyAt = 0f;
@@ -325,13 +351,20 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (renderNow)
             {
-                RenderMonitorTextures(now, monitorVisible: true);
-                PinLowerLeftVideoTexture();
-                _lastCompositorRenderAt = now;
-                _nextCompositorRenderAt = now + ResolveCompositorInterval(monitorVisible: true);
-                _nextRightCompositorRenderAt = now + ResolveRightCompositorInterval(monitorVisible: true);
-                _compositorDirty = false;
-                _rightCompositorDirty = false;
+                // #1219 G4: queued, not rendered here. Both dirty flags are set, so the
+                // scheduler serves them on its capped bypass within the next frames and
+                // the render callbacks clear the flags.
+                _scheduledMonitorVisible = true;
+                _scheduledAllowRadarWork = true;
+                _rightCompositorDirty = true;
+                CctvRenderScheduler.Request(
+                    CctvRenderClient.LeftCompositor,
+                    ResolveCompositorInterval(monitorVisible: true),
+                    bypassCadence: true);
+                CctvRenderScheduler.Request(
+                    CctvRenderClient.RightCompositor,
+                    ResolveRightCompositorInterval(monitorVisible: true),
+                    bypassCadence: true);
             }
         }
 
@@ -343,7 +376,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             SyncSlotTextures();
             RefreshLeftCameraLabel(Time.unscaledTime, monitorVisible: true);
             _compositorDirty = true;
-            _nextCompositorRenderAt = 0f;
             _forceFastMaterialVerify = true;
         }
 
@@ -367,7 +399,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void Shutdown()
         {
+            CancelCompositorRenders();
             TickCctvTargetOutlines(active: false);
+            if (_machineVisionFontMaterial != null) UnityEngine.Object.Destroy(_machineVisionFontMaterial);
+            _machineVisionFontMaterial = null;
+            _machineVisionFont = null;
             VanillaRadarFeed.SetActive(false);
             RestoreVanillaLowerMonitorFeeds();
             _lowerRightAuxBinding.Restore();
@@ -416,8 +452,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _loggedPinningMapVideo = false;
             _nextProbeAt = 0f;
             _nextBindMaintenanceAt = 0f;
-            _nextCompositorRenderAt = 0f;
-            _nextRightCompositorRenderAt = 0f;
+            _scheduledMonitorVisible = false;
+            _scheduledAllowRadarWork = false;
             _nextReassertAt = 0f;
             _nextFullSuppressionAt = 0f;
             _nextFastMaterialVerifyAt = 0f;
@@ -500,17 +536,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static void ClearLeftScreenFurnitureRefs()
         {
             _leftClockLabel = null;
-            _leftRecDot = null;
             _leftRecLabel = null;
             _leftStatusLabel = null;
-            _leftSignalBars = null;
+            _leftZoomLabel = null;
             _leftSignalLostRoot = null;
             _leftSignalLostStatic = null;
             _leftSignalLostLabel = null;
             _lastLeftClockText = null;
             _lastLeftStatusText = null;
             _lastLeftSignalLostText = null;
-            _lastLeftSignalBars = -1;
             _lastLeftRecOn = false;
             _lastLeftSignalLost = false;
             _signalLostStaticStep = 0;
@@ -544,13 +578,17 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             camera.targetTexture = renderTexture;
             camera.enabled = false;
 
-            // Manually driven (enabled = false, rendered via explicit Camera.Render()
-            // calls). Under HDRP a camera without HDAdditionalCameraData cannot resolve
-            // into its assigned RenderTexture and instead stomps the backbuffer with its
-            // clear color. Mirrors ShipTurretController.Core.cs's manual-camera pattern.
+            // Manually driven (enabled = false, rendered by CctvRenderScheduler through
+            // Camera.Render()). Under HDRP a camera without HDAdditionalCameraData cannot
+            // resolve into its assigned RenderTexture and instead stomps the backbuffer with
+            // its clear color. Mirrors ShipTurretController.Core.cs's manual-camera pattern.
             HDAdditionalCameraData hdrp = cameraGo.AddComponent<HDAdditionalCameraData>();
             hdrp.clearColorMode = HDAdditionalCameraData.ClearColorMode.Color;
             hdrp.backgroundColorHDR = camera.backgroundColor;
+            // #1219 G4: the compositor draws one world-space UI canvas; the Core profile
+            // strips the post, lighting and custom-pass work HDRP would otherwise run for it.
+            // The profile's registry entry dies with the camera, so teardown needs no release.
+            CameraRenderProfile.ApplyProfile(camera, CameraRenderRole.UiCompositor);
 
             GameObject canvasGo = new GameObject($"{name}MonitorCanvas", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster), typeof(Image));
             canvasGo.transform.SetParent(_rigRoot.transform, worldPositionStays: false);
@@ -583,13 +621,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // readouts stay legible over it, the way a real DVR looks when it loses one
             // channel.
             CreateLeftSignalLostPlate(canvas);
-            CreateLeftCornerBrackets(canvas);
             CreateLeftCameraLabel(canvas);
             CreateLeftRecIndicator(canvas);
             CreateLeftStatusLine(canvas);
             CreateLeftSwitchFlash(canvas);
             CreateLeftReticle(canvas);
-            CreateBorder(canvas, new Color(0f, 0.8f, 0.2f, 0.65f), 5f);
             CreateLeftTerminalOverlayRoot(canvas);
         }
 
@@ -607,6 +643,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             SetLayerRecursive(root, UiRenderLayer);
             return true;
         }
+
+        internal static void InvalidateMachineVisionUi() => _compositorDirty = true;
 
         internal static Vector2 GetLowerLeftOverlayDockPosition()
         {
@@ -633,7 +671,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             center = pane.anchoredPosition;
             size = pane.rect.size;
             if (size.x <= 1f || size.y <= 1f)
-                size = new Vector2(MonitorWidth - 28f, MonitorHeight - 28f);
+                size = new Vector2(MonitorWidth, MonitorHeight);
             return size.x > 1f && size.y > 1f;
         }
 
@@ -653,7 +691,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
 
             _targetOutlinesActive = true;
-            CctvOutlineManager.Tick(activeCamera, true);
+            CctvOutlineManager.Tick(null, false);
             CctvScreenOutlineOverlay.Tick(true);
         }
 

@@ -21,35 +21,33 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 {
     internal static partial class MonitorFocus
     {
-        internal static void TriggerCameraContextOrScan()
+        private static bool TryTriggerCameraContextAction()
         {
-            if (Y4NGZPlayerAnimationBridge.IsFirstPersonHandEditModeActive) return;
-            if (!IsFocused) return;
-            if (IsHackingOverlayOpen) return;
-            if (SurveillanceBootstrap.Config != null && !SurveillanceBootstrap.Config.AllowTargetScanning.Value)
-            {
-                ShowTimedScanStatus("TARGET SCANNING DISABLED BY HOST", OVERLAY_SCAN_RED, 1.4f);
-                return;
-            }
+            if (Y4NGZPlayerAnimationBridge.IsFirstPersonHandEditModeActive) return true;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return true;
+            if (IsHackingOverlayOpen || IsMainframeOverlayOpen) return true;
 
             CCTVCamera active = GetActiveCamera();
             if (active == null || active.Cam == null)
             {
-                return;
+                return false;
             }
 
             if (!TryResolveContextTarget(active.Cam, out ContextTarget target))
             {
-                return;
+                return false;
             }
 
-            // The new outline-based UX: only commandable targets respond to
-            // right-click. Non-commandable things (loose items, monsters)
-            // don't trigger a scan-status readout or marker — the operator
-            // already sees them outlined in the camera feed.
+            // Left-click first handles a supported action, otherwise squad-pings.
             if (!target.Commandable)
             {
-                return;
+                return false;
+            }
+
+            if (SurveillanceBootstrap.Config?.AllowTargetScanning.Value == false)
+            {
+                ShowTimedScanStatus("TARGET SCANNING DISABLED BY HOST", OVERLAY_SCAN_RED, 1.4f);
+                return true;
             }
 
             _contextTarget = target;
@@ -57,11 +55,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             CCTVMarkerManager.PublishContextMarker(target.Position, target.Radius, target.DisplayName, 0, active.CameraIndex);
 
             HandleContextTargetAction(target);
+            return true;
         }
 
         internal static void TriggerCameraPing()
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsHackingOverlayOpen) return;
             if (SurveillanceBootstrap.Config != null && !SurveillanceBootstrap.Config.AllowCameraPings.Value)
             {
@@ -78,23 +77,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
             }
 
-            Camera cam = active.Cam;
-            Ray ray = new Ray(cam.transform.position, cam.transform.forward);
-            Vector3 point = ray.GetPoint(25f);
-            int mask = StartOfRound.Instance != null ? StartOfRound.Instance.collidersAndRoomMaskAndDefault : ~0;
-            if (Physics.Raycast(ray, out RaycastHit hit, 80f, mask, QueryTriggerInteraction.Ignore))
-            {
-                point = hit.point + hit.normal * 0.05f;
-            }
-
-            CCTVMarkerManager.PublishPing(point, active.CameraIndex);
+            if (!CctvSquadPing.Request(active)) return;
             _scanVisibleUntil = Time.unscaledTime + 0.9f;
             ShowScanStatus("PING SENT", OVERLAY_ACTIVE_GREEN);
             HideScanLabels();
 
             PlayPingSfx();
 
-            SurveillanceBootstrap.Log?.LogInfo($"[LethalCCTV] CCTV ping from CAM_{active.CameraIndex:D2}: pos={point}");
+            SurveillanceBootstrap.Log?.LogInfo($"[LethalCCTV] Squad outline requested from CAM_{active.CameraIndex:D2}.");
         }
 
         private static bool TryResolveContextTarget(Camera cam, out ContextTarget target)
@@ -102,14 +92,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             target = null;
             if (cam == null) return false;
 
-            Ray ray = new Ray(cam.transform.position, cam.transform.forward);
-            if (Physics.Raycast(ray, out RaycastHit hit, CONTEXT_RAY_DISTANCE, ~0, QueryTriggerInteraction.Collide) &&
+            if (CctvSquadPing.TryRayHit(cam.transform.position, cam.transform.forward, out RaycastHit hit) &&
                 TryResolveAllowedContextTarget(hit.transform, hit.point, out target))
             {
                 return true;
             }
 
-            return TryFindSnapContextTarget(cam, out target);
+            // Do not turn a click on scenery into a nearby mainframe action.
+            return false;
         }
 
         private static bool TryResolveAllowedContextTarget(Transform hitTransform, Vector3 hitPoint, out ContextTarget target)
@@ -151,12 +141,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             target = null;
             if (hitTransform == null) return false;
 
-            Turret turret = hitTransform.GetComponentInParent<Turret>();
-            if (turret != null)
-            {
-                target = CreateContextTarget(turret, "TURRET", "enable / disable", turret.transform.position, OVERLAY_ACTIVE_GREEN);
-                return true;
-            }
+
 
             Landmine mine = hitTransform.GetComponentInParent<Landmine>();
             if (mine != null)
@@ -165,19 +150,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return true;
             }
 
-            TerminalAccessibleObject terminalDoor = hitTransform.GetComponentInParent<TerminalAccessibleObject>();
-            if (terminalDoor != null)
-            {
-                target = CreateContextTarget(terminalDoor, "SECURITY DOOR", "open / close", terminalDoor.transform.position, OVERLAY_ACTIVE_GREEN);
-                return true;
-            }
 
-            DoorLock door = hitTransform.GetComponentInParent<DoorLock>();
-            if (door != null)
-            {
-                target = CreateContextTarget(door, "DOOR", "open / close", hitPoint, OVERLAY_ACTIVE_GREEN);
-                return true;
-            }
+
+
 
             if (CctvCommandTargetBridge.TryDescribeTarget(hitTransform, out CctvCommandTargetBridge.TargetInfo supportTarget))
             {
@@ -201,36 +176,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             float bestScore = float.PositiveInfinity;
 
-            Turret[] turrets = UnityEngine.Object.FindObjectsOfType<Turret>();
-            for (int i = 0; i < turrets.Length; i++)
-            {
-                Turret turret = turrets[i];
-                if (turret == null) continue;
-                TryChooseSnapTarget(cam, CreateContextTarget(turret, "TURRET", "enable / disable", turret.transform.position, OVERLAY_ACTIVE_GREEN), ref target, ref bestScore);
-            }
-
             Landmine[] mines = UnityEngine.Object.FindObjectsOfType<Landmine>();
             for (int i = 0; i < mines.Length; i++)
             {
                 Landmine mine = mines[i];
                 if (mine == null) continue;
                 TryChooseSnapTarget(cam, CreateContextTarget(mine, "MINE", "enable / disable", mine.transform.position, OVERLAY_ACTIVE_GREEN), ref target, ref bestScore);
-            }
-
-            DoorLock[] doors = UnityEngine.Object.FindObjectsOfType<DoorLock>();
-            for (int i = 0; i < doors.Length; i++)
-            {
-                DoorLock door = doors[i];
-                if (door == null) continue;
-                TryChooseSnapTarget(cam, CreateContextTarget(door, "DOOR", "open / close", door.transform.position, OVERLAY_ACTIVE_GREEN), ref target, ref bestScore);
-            }
-
-            TerminalAccessibleObject[] terminalObjects = UnityEngine.Object.FindObjectsOfType<TerminalAccessibleObject>();
-            for (int i = 0; i < terminalObjects.Length; i++)
-            {
-                TerminalAccessibleObject terminalDoor = terminalObjects[i];
-                if (terminalDoor == null || !terminalDoor.isBigDoor) continue;
-                TryChooseSnapTarget(cam, CreateContextTarget(terminalDoor, "SECURITY DOOR", "open / close", terminalDoor.transform.position, OVERLAY_ACTIVE_GREEN), ref target, ref bestScore);
             }
 
             List<CctvCommandTargetBridge.TargetInfo> supportTargets = CctvCommandTargetBridge.GetActiveTargets();
@@ -503,6 +454,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (TryExecuteCommand(command, out string status, out Color color))
             {
+                CCTVStationEvents.RaiseActionButtonPressed("object-action-accepted");
                 PlayInteractSfx();
                 ShowTimedScanStatus(status, color, 1.4f);
                 SurveillanceBootstrap.Log?.LogInfo($"[LethalCCTV] CCTV direct action target='{target.DisplayName}' command='{command}' status='{status}'.");
@@ -584,6 +536,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 SurveillanceBootstrap.Log?.LogInfo($"[LethalCCTV][MainframeControl] Mainframe already hacked; opening control menu from CCTV target click for target='{target.DisplayName}'.");
                 ShowScanStatus("MAINFRAME ONLINE", OVERLAY_ACTIVE_GREEN);
                 OpenMainframeOverlayForCurrent();
+                if (IsMainframeOverlayOpen) CCTVStationEvents.RaiseActionButtonPressed("object-action-accepted");
                 return true;
             }
 
@@ -607,6 +560,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     SurveillanceBootstrap.Log?.LogInfo($"[LethalCCTV][MainframeControl] Mainframe returned already hacked; opening control menu from CCTV target click for target='{target.DisplayName}'.");
                     ShowScanStatus("MAINFRAME ONLINE", OVERLAY_ACTIVE_GREEN);
                     OpenMainframeOverlayForCurrent();
+                    if (IsMainframeOverlayOpen) CCTVStationEvents.RaiseActionButtonPressed("object-action-accepted");
                     return true;
                 }
 
@@ -614,6 +568,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 PlayInteractSfx();
                 ShowScanStatus("HACK STARTED", OVERLAY_ACTIVE_GREEN);
                 OpenHackingOverlayForCurrent();
+                if (IsHackingOverlayOpen) CCTVStationEvents.RaiseActionButtonPressed("object-action-accepted");
                 return true;
             }
 
@@ -687,27 +642,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return false;
             }
 
-            if (_contextTarget.Component is Turret turret)
-            {
-                if (IsDisableCommand(command))
-                {
-                    if (!TrySpendCommandPower(out status, out color)) return false;
-                    turret.ToggleTurretEnabled(false);
-                    status = "TURRET DISABLE";
-                    color = OVERLAY_ACTIVE_GREEN;
-                    return true;
-                }
-                if (IsEnableCommand(command))
-                {
-                    if (!TrySpendCommandPower(out status, out color)) return false;
-                    turret.ToggleTurretEnabled(true);
-                    status = "TURRET ENABLE";
-                    color = OVERLAY_ACTIVE_GREEN;
-                    return true;
-                }
-                status = "USE ENABLE / DISABLE";
-                return false;
-            }
+
 
             if (_contextTarget.Component is Landmine mine)
             {
@@ -731,49 +666,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return false;
             }
 
-            if (_contextTarget.Component is TerminalAccessibleObject terminalDoor)
-            {
-                if (IsOpenCommand(command))
-                {
-                    if (!TrySpendCommandPower(out status, out color)) return false;
-                    terminalDoor.SetDoorLocalClient(true);
-                    status = "DOOR OPEN";
-                    color = OVERLAY_ACTIVE_GREEN;
-                    return true;
-                }
-                if (IsCloseCommand(command))
-                {
-                    if (!TrySpendCommandPower(out status, out color)) return false;
-                    terminalDoor.SetDoorLocalClient(false);
-                    status = "DOOR CLOSE";
-                    color = OVERLAY_ACTIVE_GREEN;
-                    return true;
-                }
-                status = "USE OPEN / CLOSE";
-                return false;
-            }
 
-            if (_contextTarget.Component is DoorLock door)
-            {
-                if (IsOpenCommand(command))
-                {
-                    if (!TrySpendCommandPower(out status, out color)) return false;
-                    door.OpenDoorAsEnemyServerRpc();
-                    status = "DOOR OPEN";
-                    color = OVERLAY_ACTIVE_GREEN;
-                    return true;
-                }
-                if (IsCloseCommand(command))
-                {
-                    if (!TrySpendCommandPower(out status, out color)) return false;
-                    door.CloseDoorNonPlayerServerRpc();
-                    status = "DOOR CLOSE";
-                    color = OVERLAY_ACTIVE_GREEN;
-                    return true;
-                }
-                status = "USE OPEN / CLOSE";
-                return false;
-            }
+
+
 
             if (CctvCommandTargetBridge.TryDescribeTarget(_contextTarget.Component, out _))
             {
@@ -806,7 +701,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static bool IsOpenCommand(string command)
         {
-            return command == "open";
+            return command == "open" || command == "unlock";
         }
 
         private static bool IsCloseCommand(string command)
@@ -851,7 +746,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         {
             if (camera?.Cam == null) return;
 
-            float baseFov = SurveillanceBootstrap.Config != null ? SurveillanceBootstrap.Config.FieldOfView.Value : camera.Cam.fieldOfView;
+            float baseFov = SurveillanceBootstrap.Config != null ? Mathf.Min(SurveillanceBootstrap.Config.FieldOfView.Value, Y4NGZCompany.Facility.Cameras.Placement.CameraPlacementSafety.VerticalFov) : camera.Cam.fieldOfView;
             float minFov = Mathf.Clamp(ZOOM_MIN_FOV, 8f, Mathf.Max(8f, baseFov - 1f));
             float zoom = GetZoom(camera);
             camera.Cam.fieldOfView = Mathf.Lerp(baseFov, minFov, zoom);
@@ -860,7 +755,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static string FormatZoom(CCTVCamera camera)
         {
             if (camera?.Cam == null) return "1.0X";
-            float baseFov = Mathf.Max(1f, SurveillanceBootstrap.Config != null ? SurveillanceBootstrap.Config.FieldOfView.Value : camera.Cam.fieldOfView);
+            float baseFov = Mathf.Max(1f, SurveillanceBootstrap.Config != null ? Mathf.Min(SurveillanceBootstrap.Config.FieldOfView.Value, Y4NGZCompany.Facility.Cameras.Placement.CameraPlacementSafety.VerticalFov) : camera.Cam.fieldOfView);
             float fov = Mathf.Max(1f, camera.Cam.fieldOfView);
             return (baseFov / fov).ToString("0.0") + "X";
         }

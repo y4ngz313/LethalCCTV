@@ -11,34 +11,42 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private void BindDisplay(ConfigFile cfg)
         {
+            cfg.Bind(DiagnosticsSection, "Low Light Revision", 1, "Internal marker for a one-time settings upgrade, set to 1 once it has run; do not edit. Your own setting.");
+            cfg.Bind(DiagnosticsSection, "Machine Vision Revision", 1, "Internal marker for a one-time settings upgrade, set to 1 once it has run; do not edit. Your own setting.");
             // === Phase 1.7 — Display ===
             // Display-side night-vision treatment applied to the per-quad clone material's
-            // shader. Bool toggle bypasses the grayscale step (gain still applies); set false
+            // shader. Bool toggle bypasses both grayscale and gain; set false
             // to see raw CCTV colour. Per-client aesthetic; not synced. Hot-reloadable via
             // NightVisionParamsChanged → QuadMonitor.ApplyNightVisionParams.
             NightVisionEnabled = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Night Vision Enabled",
                 true,
-                "If true, CCTV feeds are rendered grayscale (Rec.601 luminance) with the configured brightness gain — the security-camera 'night vision' aesthetic, and the practical fix for dim dungeon interiors that would otherwise display as near-black. If false, only the gain multiplier applies (colour preserved). Per-client; not synced. Hot-reloadable.");
+                "Lets camera feeds switch to night vision, which brightens dark rooms and turns the picture mostly black and white. On by default; turn it off to see every feed in plain colour with no extra brightening. Your own setting.");
 
             NightVisionGain = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Night Vision Gain",
-                2.0f,
-                "Brightness multiplier applied after the (optional) grayscale step, saturated to [0,1] after multiply. Default 2.0 brightens dim interiors without crushing the highlights of already-lit feeds. Range: 0.5–8.0. Per-client; not synced. Hot-reloadable.");
+                4.0f,
+                "How strongly night vision brightens a dark camera feed: with Night Vision Auto Gain on this is the most it will brighten, with it off every feed is brightened by exactly this much. The default is 4.0, and the mod keeps it between 0.5 and 8. Your own setting.");
 
             NightVisionAutoGain = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Night Vision Auto Gain",
                 true,
-                "If true, each CCTV feed measures its own average brightness and scales the night-vision gain like a real camera's AGC: dim interiors are boosted up to the configured Night Vision Gain ceiling, while brightly lit interiors are attenuated so they no longer clip to solid white (the fixed 2.0x gain white-out on lit vanilla interiors, #569). If false, the configured gain applies unconditionally (the pre-1.0 behavior). Per-client; not synced. Hot-reloadable.");
+                "Lets each camera feed adjust its own brightness like a real camera, brightening dark rooms up to Night Vision Gain and toning down brightly lit rooms so they do not wash out to white. On by default; turn it off to brighten every feed by exactly Night Vision Gain. Your own setting.");
+
+            NightVisionAutomaticLowLight = cfg.Bind(
+                ShipMonitorSection,
+                "Automatic Low Light",
+                true,
+                "Switches a feed into night vision only while the room it shows is dark, fading smoothly in and out, so lit rooms keep their natural colour. On by default; turn it off to keep night vision on in every room. Your own setting.");
 
             NightVisionFlipY = cfg.Bind(
-                DisplaySection,
-                "Night Vision Flip Y",
+                ShipMonitorSection,
+                "Flip Feed Vertically",
                 true,
-                "If true, vertically flips the baked CCTV feed before it reaches the monitor. Direct3D/HDRP camera target textures can arrive upside-down through the Graphics.Blit bake path; leave enabled unless the feed appears vertically inverted. Per-client; not synced. Hot-reloadable.");
+                "Turns every camera feed upside down before it reaches the ship monitor, in normal view as well as night vision. On by default because feeds otherwise arrive upside down in this game; turn it off only if your feeds look upside down. Your own setting.");
 
             // === Analog artifacts ===
             // These ten drive the analog-DVR treatment baked into every CCTV feed.
@@ -49,88 +57,88 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // Material.HasProperty guard, so an older bundle silently ignores any it
             // does not declare.
             FeedColorRetention = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Color Retention",
-                0.35f,
-                "How much of the original colour survives the grayscale step, 0 = fully monochrome, 1 = untouched colour. Only applies when Night Vision Enabled is true. Also sets the ceiling on the chromatic-aberration fringe: the RGB split is composed from three independently desaturated taps, so at 0 retention the fringe comes purely from the three taps' differing luminance and at higher retention it also carries real hue. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0.08f,
+                "How much colour stays in a feed once night vision takes over in a dark room, from 0 for pure black and white to 1 for full colour; it also limits how coloured the fringes from Feed Chromatic Aberration look. The default of 0.08 keeps a little colour, and it has no effect while Night Vision Enabled is off. Your own setting.");
 
             FeedScanlineStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Scanline Strength",
-                0.055f,
-                "Depth of the CRT scanline darkening — a fine sine ripple plus slow-crawling coarse bands. 0 disables scanlines. Raise carefully: scanlines and Feed Interlace Strength both key off the 432 px feed height and can moiré against each other. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0.018f,
+                "How dark the fine horizontal lines across the monitor picture are, like an old tube TV. At the default of 0.018 they are barely visible and 0 removes them; high values can shimmer against Feed Interlace Strength. Your own setting.");
 
             FeedNoiseStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Noise Strength",
-                0.018f,
-                "Amplitude of the per-pixel analog grain, re-rolled 24 times a second. 0 disables grain. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0.006f,
+                "How much flickering grain covers the monitor picture. At the default of 0.006 the grain is faint, and 0 removes it. Your own setting.");
 
             FeedVignetteStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Vignette Strength",
-                0.12f,
-                "Radial darkening toward the edges of the feed. 0 disables the vignette. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0f,
+                "Darkens the edges of the monitor picture compared with the centre. Off at the default of 0; raise it toward 1 for heavier dark edges. Your own setting.");
 
             FeedChromaAberration = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Chromatic Aberration",
-                0.25f,
-                "Radial RGB split, scaling with distance from the centre of the feed. At the default 0.25 the split at the frame corner is about 1.5 px on a 768x432 feed — a fringe on high-contrast edges rather than an obvious colour ghost. 0 disables it. Range: 0.0–4.0. Per-client; not synced. Hot-reloadable.");
+                0f,
+                "Splits the picture into red, green and blue colour fringes that grow toward the edges, like a cheap lens. Off at the default of 0; a small value such as 0.25 gives a thin fringe on sharp edges, while larger values give an obvious colour ghost. Your own setting.");
 
             FeedRollBarStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Roll Bar Strength",
-                0.10f,
-                "Brightness of the soft band that drifts through the frame, the way an unsynced analog capture rolls. 0 disables the band. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0f,
+                "How bright the soft band is that slowly rolls through the picture, like a badly synced old video signal. Off at the default of 0. Your own setting.");
 
             FeedRollBarSpeed = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Roll Bar Speed",
                 0.12f,
-                "How fast the roll bar drifts, in frame-heights per second — the default 0.12 takes roughly 8 seconds to cross the feed. Has no effect when Feed Roll Bar Strength is 0. Range: 0.0–2.0. Per-client; not synced. Hot-reloadable.");
+                "How fast the rolling band from Feed Roll Bar Strength moves; at the default of 0.12 it takes about 8 seconds to cross the picture. Does nothing while Feed Roll Bar Strength is 0. Your own setting.");
 
             FeedCurvatureStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Curvature Strength",
-                0.12f,
-                "CRT barrel warp. The image bulges outward and the corners fall off the tube, so they render black instead of smearing. 0 disables the warp and restores a flat, full-bleed frame. Lower this if the overlay text stack ends up sitting over blacked-out corners. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0f,
+                "Bulges the picture outward like an old curved TV screen, with the corners falling away to black. Off at the default of 0, which keeps a flat picture that fills the screen; lower it if the text on the monitor ends up over black corners. Your own setting.");
 
             FeedInterlaceStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Interlace Strength",
-                0.06f,
-                "Depth of the odd/even field flicker — alternating single-pixel rows dim, and which field is dimmed toggles about 12 times a second. 0 disables the flicker. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0f,
+                "Makes alternating rows of the picture dim and flicker about 12 times a second, like an old interlaced TV signal. Off at the default of 0. Your own setting.");
 
             FeedDropoutStrength = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "Feed Dropout Strength",
-                0.04f,
-                "Density of sparse dead/hot pixel specks, re-rolled 8 times a second. At the default 0.04 roughly 25 four-pixel specks are on screen at any moment. 0 disables them. Range: 0.0–1.0. Per-client; not synced. Hot-reloadable.");
+                0f,
+                "Scatters tiny dead or overbright pixel specks that flash across the picture. Off at the default of 0; a value around 0.04 shows a couple of dozen specks at a time. Your own setting.");
 
             CCTVFillLightEnabled = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "CCTV Fill Light Enabled",
                 true,
-                "If true, enables a scoped night-vision spot light only while an individual CCTV camera is rendering. This brightens geometry for the CCTV feed without leaving a persistent light in the dungeon for the player camera. Per-client; not synced. Hot-reloadable.");
+                "Allows a small light that brightens what a camera sees only while that camera draws its picture, so it never lights the room for players. The light only switches on when CCTV Render Fill Light Enabled is also on, which is off by default, so at the defaults no light is added even though this is on. Your own setting.");
 
             CCTVRenderFillLightEnabled = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "CCTV Render Fill Light Enabled",
                 false,
-                "Second-stage opt-in for the real scoped CCTV spot light. Default false keeps CCTV renders shader/exposure-only for performance; set true together with CCTV Fill Light Enabled if feeds are too dark and the extra lighting cost is acceptable. Per-client; not synced. Hot-reloadable.");
+                "The second switch for the camera fill light: the light is added only when this and CCTV Fill Light Enabled are both on. Off by default because the extra light costs frame rate; turn it on if feeds look too dark and you can spare the performance. Your own setting.");
 
             CCTVFillLightIntensity = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "CCTV Fill Light Intensity",
                 367.0f,
-                "Intensity for the scoped CCTV fill light. Default mirrors the OpenBodyCams night-vision light baseline. Lower if feeds clip white; raise if they remain too dark. Per-client; not synced. Hot-reloadable.");
+                "How bright the camera fill light is when it is switched on. The default of 367 matches the night-vision light of the OpenBodyCams mod; lower it if feeds turn white, raise it if they stay too dark. Your own setting.");
 
             CCTVFillLightRange = cfg.Bind(
-                DisplaySection,
+                ShipMonitorSection,
                 "CCTV Fill Light Range",
-                12.0f,
-                "Range in meters for the scoped CCTV fill light. Default mirrors the OpenBodyCams night-vision range baseline and matches the existing short indoor CCTV far-clip target. Per-client; not synced. Hot-reloadable.");
+                14.0f,
+                "How far the camera fill light reaches, in metres, when it is switched on. The default of 14 matches the night-vision light of the OpenBodyCams mod. Your own setting.");
 
             void RaiseNightVisionChanged(object _, EventArgs __) => NightVisionParamsChanged?.Invoke();
             NightVisionEnabled.SettingChanged += RaiseNightVisionChanged;
@@ -155,58 +163,58 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private void BindPhysicalCameras(ConfigFile cfg)
         {
             PhysicalCameraVisualsEnabled = cfg.Bind(
-                PhysicalCamerasSection,
+                CameraPlacementSection,
                 "Physical Camera Visuals Enabled",
                 true,
-                "If true, spawns a visible wall/ceiling security-camera prop near each interior CCTV render camera. The prop is visual-only; the actual CCTV feed camera stays at its existing view position. Per-client; not synced.");
+                "Shows a security camera body on the wall or ceiling where each camera inside the facility sits; the camera feeds work either way. On by default; turning it off hides the camera bodies for you and also leaves you nothing to hit when trying to break a camera. Your own setting.");
 
             PhysicalCameraVisualScale = cfg.Bind(
-                PhysicalCamerasSection,
+                CameraPlacementSection,
                 "Physical Camera Visual Scale",
                 1.0f,
-                "Scale multiplier for the visible security-camera prop. Applies to the optional bundled prefab and the generated fallback visual. Per-client; not synced.");
+                "Size of the camera bodies on walls and ceilings. The default of 1.0 is normal size, and the mod keeps it between 0.05 and 10. Your own setting.");
 
             SecuritySweepEnabled = cfg.Bind(
-                PhysicalCamerasSection,
+                CctvModuleConfig.SecuritySystemsSection,
                 "Security Sweep Enabled",
                 true,
-                "If true, unbroken CCTV cameras slowly sweep left-to-right when not under manual player control. Per-client visual; server owns detection state.");
+                "Makes working cameras slowly turn from side to side when nobody is steering them, and turn to follow a player they have spotted, so they watch more of the room. On by default; with it off cameras hold still and only see what is straight ahead of them. Host decides.");
 
             SecuritySweepYawDegrees = cfg.Bind(
-                PhysicalCamerasSection,
-                "Security Sweep Yaw Degrees",
-                42.0f,
-                "Maximum yaw offset in either direction for automatic camera sweeps. Per-client visual; server owns detection state.");
+                CctvModuleConfig.SecuritySystemsSection,
+                "Security Sweep Degrees",
+                44.0f,
+                "How far a camera turns to each side during its sweep, in degrees. At the default of 44 it covers 88 degrees in total, and it never turns past the 90 degrees its mount allows. Host decides.");
 
             SecuritySweepSeconds = cfg.Bind(
-                PhysicalCamerasSection,
+                CctvModuleConfig.SecuritySystemsSection,
                 "Security Sweep Seconds",
-                12.0f,
-                "Seconds for one full left-to-right-to-left camera sweep cycle. Per-client visual; server owns detection state.");
+                14.0f,
+                "How many seconds one full sweep takes, from one side to the other and back. At the default of 14 cameras turn slowly; lower values sweep faster. Host decides.");
 
             SecurityTrackDegreesPerSecond = cfg.Bind(
-                PhysicalCamerasSection,
+                CctvModuleConfig.SecuritySystemsSection,
                 "Security Track Degrees Per Second",
                 38.0f,
-                "Maximum degrees per second a security-active camera can turn while following a visible player. Per-client visual; server owns detection state.");
+                "The fastest a camera can turn, in degrees per second, while it follows a player it has spotted; its sweep never goes faster than this either. The default is 38. Host decides.");
 
             SecurityDetectionIndicatorIntensity = cfg.Bind(
-                PhysicalCamerasSection,
+                CctvModuleConfig.SecuritySystemsSection,
                 "Security Detection Indicator Intensity",
                 1.0f,
-                "Intensity multiplier for suspicion-only camera detection indicators. Per-client visual.");
+                "How bright the beam is that a camera shines while it is spotting a player. The default of 1.0 is normal brightness, and 0 hides the beam. Your own setting.");
 
             SecurityIdleConeIntensity = cfg.Bind(
-                PhysicalCamerasSection,
+                CctvModuleConfig.SecuritySystemsSection,
                 "Security Idle Cone Intensity",
                 1.0f,
-                "Intensity multiplier for the faint always-on visibility cone a security-active camera casts before it has spotted anyone, so you can read what it is looking at. 0 disables the idle cone and leaves only the detection beam. Separate from Security Detection Indicator Intensity so 'subtle' can be dialled without touching the detection beam. Per-client visual.");
+                "How bright the faint cone is that an armed security camera shows before it has spotted anyone, so you can tell where it is looking. The default of 1.0 is normal brightness; 0 hides the cone and leaves only the beam set by Security Detection Indicator Intensity. Your own setting.");
 
             SecurityLensDotGlow = cfg.Bind(
-                PhysicalCamerasSection,
+                CctvModuleConfig.SecuritySystemsSection,
                 "Security Lens Dot Glow",
                 1.0f,
-                "Multiplier for how brightly the camera's lens dot itself glows, across every state (inactive red, active amber, detection strobe, alarm). Scales the whole ladder at once, so the relative brightness between states is preserved. 0 leaves the dot unlit. Per-client visual.");
+                "How brightly the small light on each camera's lens glows in every state, from idle red and armed amber to the spotting flash and the alarm, keeping the same difference between states. The default of 1.0 is normal brightness, and 0 leaves the light dark. Your own setting.");
         }
     }
 }

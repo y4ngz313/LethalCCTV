@@ -51,7 +51,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static readonly Vector3 NoteLocalPosition = new Vector3(1.33f, 2.53f, 1.37f);
         private static readonly Vector3 NoteLocalEuler = new Vector3(351.47f, 263.85f, 0f);
         private static readonly Vector3 NoteLocalScale = Vector3.one * CCTVStickyNoteItem.VanillaNoteScale;
-        private const float BrakeLeverCardinalTiltDeg = 14f;
+        private const float BrakeLeverCardinalTiltDeg = 7f;
         private const float JoystickIdleAfterSeconds = 0.16f;
         // Below this the stick is considered fully settled and the pivot is
         // released so StartMatchLever's Animator can drive the throttle mesh.
@@ -59,8 +59,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // Focus/radar seat defaults are the F10-authored placements from the tuned
         // dev profile (2026-08-20); the previous defaults seated the camera ~0.5m
         // and ~16 deg off on profiles without a local placement JSON (#569).
-        private static readonly Vector3 FocusLocalPosition = new Vector3(-0.011f, 1.817f, 0.552f);
-        private static readonly Vector3 FocusLocalEuler = new Vector3(7.16f, 71.26f, 349.43f);
+        private static readonly Vector3 FocusLocalPosition = new Vector3(-0.55f, 1.92f, 0.547f);
+        // Face the monitor wall with a level horizon and leave room for both hands.
+        private static readonly Vector3 FocusLocalEuler = new Vector3(7f, 87f, 0f);
         private static readonly Vector3 RadarFocusLocalPosition = FocusLocalPosition;
         private static readonly Vector3 RadarFocusLocalEuler = new Vector3(358.49f, 133.75f, 342.72f);
         private static readonly Vector3 OperatorPoseLocalPosition = new Vector3(0.04f, 1.12f, 0.56f);
@@ -292,10 +293,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 _pendingWarmupStep = 0;
             }
 
-            SurveillanceBootstrap.Log?.LogWarning(
+            // Warm-up timing is profiling detail on a one-shot path, not a fault. It stays at
+            // Warning only while the diagnostics toggle asks for it.
+            string warmup =
                 $"[LethalCCTV.Timing] station warmup step {step} " +
                 $"({(step == 1 ? "authored controller" : "focus HUD scan")}) took " +
-                $"{TicksToMs(System.Diagnostics.Stopwatch.GetTimestamp() - startedAt):F1}ms (#280).");
+                $"{TicksToMs(System.Diagnostics.Stopwatch.GetTimestamp() - startedAt):F1}ms (#280).";
+            if (SurveillanceBootstrap.Config?.PerformanceTimingLogging?.Value == true)
+                SurveillanceBootstrap.Log?.LogWarning(warmup);
+            else
+                SurveillanceBootstrap.Log?.LogDebug(warmup);
         }
 
         private static double TicksToMs(long ticks)
@@ -305,6 +312,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void Shutdown()
         {
+            ReleaseJoystickSession();
             ClearStationEventSubscriptions();
             _placementEditor?.Cancel();
             CCTVAccessButton.Shutdown();
@@ -381,6 +389,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnStationChairEntered(PlayerControllerB _)
         {
+            BeginJoystickSession(_);
             _joystickCameraControlActive = false;
             ResetJoystickMotionTarget(immediate: true);
             UpdateJoystickMotion(force: true);
@@ -400,6 +409,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnStationChairExited(PlayerControllerB _)
         {
+            // The animation session retains the lever through its exit hold.
+            // Entry failures without a session still release on chair exit.
+            if (!Y4NGZPlayerAnimationBridge.IsLocalSessionActive(_)) ReleaseJoystickSession(_);
             _joystickCameraControlActive = false;
             ResetJoystickMotionTarget();
         }

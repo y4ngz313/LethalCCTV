@@ -8,6 +8,7 @@ using UnityEngine.Networking;
 using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 using Y4NGZCompany.Facility.Shared;
 
 namespace Y4NGZCompany.Facility.Cameras
@@ -202,6 +203,13 @@ namespace Y4NGZCompany.Facility.Cameras
             _glowUntil = 0f;
             if (_tipLight != null)
                 _tipLight.enabled = false;
+            // #716 E13: deliberately NOT the fade helper. Nothing disables this behaviour on its
+            // own, so OnDisable only ever runs as teardown - an ancestor deactivating, or this
+            // object being destroyed. The loop source lives on a child of this transform, so by
+            // the time we get here it is already out of the active hierarchy and Unity has
+            // stopped it; a volume ramp on a source that is no longer playing is inaudible, and
+            // the camera is leaving the scene either way. The audible "camera goes dark" case is
+            // the detection gate in UpdateActiveLoop, which does fade.
             if (_activeLoopSource != null)
                 _activeLoopSource.Stop();
         }
@@ -549,12 +557,18 @@ namespace Y4NGZCompany.Facility.Cameras
                 && !_holder.SecurityRemotelyDisabled;
             if (!shouldPlay || _activeLoopClip == null)
             {
+                // #716 E13: sustained hum, so a camera going dark winds it down rather than
+                // cutting it mid-cycle.
                 if (_activeLoopSource != null && _activeLoopSource.isPlaying)
-                    _activeLoopSource.Stop();
+                    CctvAudioFade.StopLoop(_activeLoopSource);
                 return;
             }
 
             EnsureActiveLoopSource();
+            // #716 E13: detection coming back inside the wind-down ramp has to claim the source
+            // back, or the ramp still in flight would stop the loop this call just restarted.
+            CctvAudioFade.CancelFade(_activeLoopSource);
+            _activeLoopSource.volume = ActiveLoopVolume;
             if (_activeLoopSource.clip != _activeLoopClip)
                 _activeLoopSource.clip = _activeLoopClip;
             if (!_activeLoopSource.isPlaying)

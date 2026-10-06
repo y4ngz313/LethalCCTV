@@ -32,7 +32,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // landed the button outside the ship.
         private const string TemplateChildName = "ButtonContainer/ButtonAnimContainer";
         private const string RedButtonChildName = "RedButton";
-        private const string HoverTip = "View cameras : [E]";
+        // #716 E7: "[LMB]" is the vanilla interact placeholder the game rewrites to the
+        // player's bound interact key when it renders a hover tip. A hard-coded "[E]" told
+        // rebound players the wrong key.
+        private const string HoverTip = "View cameras : [LMB]";
         private const string PressTriggerName = "press";
         private const string GlassOpenBoolName = "GlassOpen";
         private const float StateRefreshIntervalSeconds = 0.2f;

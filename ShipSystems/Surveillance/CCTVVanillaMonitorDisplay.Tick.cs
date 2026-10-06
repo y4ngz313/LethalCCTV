@@ -20,6 +20,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (!CCTVTerminalUnlockable.IsPurchased())
             {
+                CancelCompositorRenders();
                 SetCctvModeActive(false, announce: false);
                 SetActive(false);
                 TickCctvTargetOutlines(active: false);
@@ -28,6 +29,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (!_cctvModeActive || QuadMonitor.QuadRTs == null)
             {
+                CancelCompositorRenders();
                 SetActive(false);
                 TickCctvTargetOutlines(active: false);
                 return;
@@ -36,6 +38,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             EnsureRenderRig();
             if (_leftRenderTexture == null || _rightRenderTexture == null)
             {
+                CancelCompositorRenders();
                 TickCctvTargetOutlines(active: false);
                 return;
             }
@@ -50,6 +53,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // power comes back.
             if (!CCTVShipSystemsBridge.IsShipPowerOnline())
             {
+                // A render still queued from a powered frame would repaint over the blank.
+                CancelCompositorRenders();
                 ApplyMonitorPowerBlank();
                 TickCctvTargetOutlines(active: false);
                 return;
@@ -160,22 +165,33 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 _compositorDirty = true;
                 // #562 — the facility cameras were disabled while the wall was
                 // out of view, so the compositor would repaint a stale frame.
-                // RequestWakeAllSlots defers the wake to the throttle's Update;
-                // WakeRender must NOT be used here (we are inside the render
-                // loop and Camera.Render would re-enter HDRP's SRP pass).
+                // RequestWakeAllSlots defers the wake to the throttle's Update,
+                // which lets HDRP render the feed on its own pass instead of
+                // spending the frame's one scheduled manual render.
                 QuadCameraAssignment.RequestWakeAllSlots();
             }
             _wasMonitorVisible = monitorVisible;
 
-            if (ShouldRenderCompositor(now, monitorVisible))
+            // #1219 G4. The two compositor renders are CctvRenderScheduler requests; the
+            // pass work that used to sit beside them runs in the render callbacks, so it
+            // stays at render cadence even when the scheduler delays a request.
+            if (ShouldRequestCompositor(monitorVisible))
             {
-                _nextCompositorRenderAt = now + ResolveCompositorInterval(monitorVisible);
-                SyncRightMonitor(allowRadarWork);
-                RefreshLeftCameraLabel(now, monitorVisible);
-                RenderMonitorTextures(now, monitorVisible);
-                PinLowerLeftVideoTexture();
-                _compositorDirty = false;
-                _lastCompositorRenderAt = now;
+                _scheduledMonitorVisible = monitorVisible;
+                _scheduledAllowRadarWork = allowRadarWork;
+                CctvRenderScheduler.Request(
+                    CctvRenderClient.LeftCompositor,
+                    ResolveCompositorInterval(monitorVisible),
+                    _lastCompositorRenderAt <= 0f || _compositorDirty ||
+                    IsLeftSwitchAnimating(now) || CctvScreenOutlineOverlay.IsFading);
+                CctvRenderScheduler.Request(
+                    CctvRenderClient.RightCompositor,
+                    ResolveRightCompositorInterval(monitorVisible),
+                    _rightCompositorDirty);
+            }
+            else
+            {
+                CancelCompositorRenders();
             }
 
             ReportSuppressedUnobservedBindMaintenance(now);
@@ -270,11 +286,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _suppressedUnobservedRepaints = 0L;
         }
 
-        private static bool ShouldRenderCompositor(float now, bool monitorVisible)
+        /// <summary>
+        /// Whether this frame may ask for compositor renders at all. Cadence and the dirty
+        /// bypass are CctvRenderScheduler's job (#1219 G4); this is the observability gate.
+        /// The first render after <c>_lastCompositorRenderAt</c> resets waits for it too:
+        /// the _wasMonitorVisible transition and the <c>_lastCompositorRenderAt &lt;= 0f</c>
+        /// bypass in Tick make that first observable render immediate.
+        /// </summary>
+        private static bool ShouldRequestCompositor(bool monitorVisible)
         {
-            if (_lastCompositorRenderAt <= 0f)
-                return true;
-
             // Observability is checked BEFORE the dirty flag on purpose. The two rig
             // Camera.Render calls cost 7-10ms a pass, and _compositorDirty is set by the
             // 1s maintenance pass whenever anything changed - SyncSlotTextures flips as
@@ -284,18 +304,23 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // (25.7ms/s in good windows, 123.9ms/s in bad ones; y4ngz313/Y4NGZCompany#196).
             //
             // Dirty therefore means "repaint pending", not "repaint now": the flag stays
-            // set while hidden and is consumed on the first observable frame, forced by
-            // the _wasMonitorVisible transition in Tick. IsMonitorWorkVisible already
-            // returns true when focused, so monitorVisible is the whole predicate.
+            // set while hidden and is consumed by the first render after the monitor is
+            // observable again, forced by the _wasMonitorVisible transition in Tick.
+            // IsMonitorWorkVisible already returns true when focused, so monitorVisible
+            // is the whole predicate.
             if (!monitorVisible)
             {
                 _suppressedUnobservedRepaints++;
                 return false;
             }
 
-            if (_compositorDirty || IsLeftSwitchAnimating(now))
-                return true;
-            return now >= _nextCompositorRenderAt;
+            return true;
+        }
+
+        private static void CancelCompositorRenders()
+        {
+            CctvRenderScheduler.Cancel(CctvRenderClient.LeftCompositor);
+            CctvRenderScheduler.Cancel(CctvRenderClient.RightCompositor);
         }
 
         private static float ResolveCompositorInterval(bool monitorVisible)

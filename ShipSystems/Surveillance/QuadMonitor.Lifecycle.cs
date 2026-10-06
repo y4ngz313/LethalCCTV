@@ -69,21 +69,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
                 EnsureEmptySlotBlackRT();
 
-                // Phase 1.7b — start the bake (loads shader bundle, creates bake
-                // material, subscribes the endCameraRendering handler) BEFORE RT
-                // allocation so we know whether to allocate RawRTs. The handler is
-                // safe to subscribe pre-publish — the dictionary is empty until
-                // BindCameraToSlot runs, so any fire on unrelated cameras misses
-                // and returns immediately.
-                bool bakeActive = NightVisionBaker.TryStart();
+                // Subscribe before publishing targets or binding cameras. The empty
+                // registration map ignores unrelated cameras during construction.
+                NightVisionBaker.TryStart();
 
                 int rtWidth = ResolveRenderTextureWidth();
                 int rtHeight = ResolveRenderTextureHeight(rtWidth);
 
                 localRTs = new RenderTexture[4];
-                if (bakeActive) localRawRTs = new RenderTexture[4];
+                localRawRTs = new RenderTexture[4];
                 localMaterials = new Material[4];
                 Material[] localOutlineMaterials = new Material[4];
+                var rawFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
+                    ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32;
                 for (int i = 0; i < 4; i++)
                 {
                     var rt = new RenderTexture(rtWidth, rtHeight, 16, RenderTextureFormat.ARGB32)
@@ -96,18 +94,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     rt.Create();
                     localRTs[i] = rt;
 
-                    if (bakeActive)
+                    var rawRt = new RenderTexture(rtWidth, rtHeight, 16, rawFormat, RenderTextureReadWrite.Linear)
                     {
-                        var rawRt = new RenderTexture(rtWidth, rtHeight, 16, RenderTextureFormat.ARGB32)
-                        {
-                            name = $"LethalCCTV_Quad{i}_RawRT",
-                            useDynamicScale = false,
-                            autoGenerateMips = false,
-                            filterMode = FilterMode.Bilinear,
-                        };
-                        rawRt.Create();
-                        localRawRTs[i] = rawRt;
-                    }
+                        name = $"LethalCCTV_Quad{i}_RawRT",
+                        useDynamicScale = false,
+                        autoGenerateMips = false,
+                        filterMode = FilterMode.Bilinear,
+                    };
+                    rawRt.Create();
+                    localRawRTs[i] = rawRt;
 
                     localMaterials[i] = CreateQuadrant(localRoot.transform, i, quadMesh, rt);
                     localOutlineMaterials[i] = CreateQuadrantOutline(localRoot.transform, i, quadMesh);

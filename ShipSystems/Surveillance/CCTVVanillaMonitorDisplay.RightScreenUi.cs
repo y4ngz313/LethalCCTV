@@ -14,7 +14,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private static void CreateRightRigUi(RectTransform canvas)
         {
-            CreateBorder(canvas, new Color(0f, 0.8f, 0.2f, 0.65f), 5f);
 
             GameObject radarGo = new GameObject("RadarView", typeof(RectTransform), typeof(CanvasRenderer), typeof(RawImage));
             radarGo.transform.SetParent(canvas, worldPositionStays: false);
@@ -31,53 +30,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _rightRadarImage.color = Color.white;
             _rightRadarImage.raycastTarget = false;
 
-            GameObject labelGo = new GameObject("RadarFloorLabel", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            labelGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(labelGo, UiRenderLayer);
-
-            RectTransform labelRt = labelGo.GetComponent<RectTransform>();
-            labelRt.anchorMin = new Vector2(0f, 1f);
-            labelRt.anchorMax = new Vector2(0f, 1f);
-            labelRt.pivot = new Vector2(0f, 1f);
-            labelRt.anchoredPosition = new Vector2(30f, -24f);
-            labelRt.sizeDelta = new Vector2(420f, 34f);
-
-            _rightRadarLabel = labelGo.GetComponent<TextMeshProUGUI>();
-            _rightRadarLabel.text = "RADAR MAP";
-            _rightRadarLabel.raycastTarget = false;
-            _rightRadarLabel.enableWordWrapping = false;
-            _rightRadarLabel.richText = false;
-            _rightRadarLabel.alignment = TextAlignmentOptions.TopLeft;
-            _rightRadarLabel.fontSize = 22f;
-            _rightRadarLabel.color = new Color(1f, 0.58f, 0.08f, 0.94f);
-            TryAssignHudFont(_rightRadarLabel);
-
-            GameObject legendGo = new GameObject("RadarLegend", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            legendGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(legendGo, UiRenderLayer);
-
-            RectTransform legendRt = legendGo.GetComponent<RectTransform>();
-            legendRt.anchorMin = new Vector2(0f, 0f);
-            legendRt.anchorMax = new Vector2(0f, 0f);
-            legendRt.pivot = new Vector2(0f, 0f);
-            legendRt.anchoredPosition = new Vector2(30f, 18f);
-            legendRt.sizeDelta = new Vector2(940f, 42f);
-
-            _rightRadarLegend = legendGo.GetComponent<TextMeshProUGUI>();
+            CreateMachineVisionFurniture(canvas);
+            _rightRadarLabel = CreateMachineVisionLabel(canvas, "RadarFloorLabel", Vector2.up,
+                new Vector2(24f, -14f), new Vector2(650f, 30f), 23f, TextAlignmentOptions.TopLeft);
+            _rightRadarLabel.text = "RADAR / STANDBY";
+            _rightRadarLegend = CreateMachineVisionLabel(canvas, "RadarLegend", Vector2.zero,
+                new Vector2(24f, 6f), new Vector2(MonitorWidth - 48f, 25f), 18f, TextAlignmentOptions.MidlineLeft);
             _rightRadarLegend.text = string.Empty;
-            _rightRadarLegend.raycastTarget = false;
-            _rightRadarLegend.enableWordWrapping = false;
-            // The one label on this screen that needs markup: each entry is
-            // wrapped in the <color> of the marker class it names, and the hex
-            // comes from the same constants the marker materials are built from.
             _rightRadarLegend.richText = true;
-            _rightRadarLegend.alignment = TextAlignmentOptions.BottomLeft;
-            _rightRadarLegend.fontSize = 26f;
-            // White base only: every visible span carries its own <color> tag,
-            // dimmed there, because a TMP colour tag replaces this value rather
-            // than tinting it.
-            _rightRadarLegend.color = Color.white;
-            TryAssignHudFont(_rightRadarLegend);
         }
 
         private static RawImage CreateSlotImage(RectTransform parent, int slot)
@@ -86,7 +46,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             backGo.transform.SetParent(parent, worldPositionStays: false);
             SetLayerRecursive(backGo, UiRenderLayer);
             RectTransform backRt = backGo.GetComponent<RectTransform>();
-            ApplySingleCameraRect(backRt, 14f);
+            ApplySingleCameraRect(backRt, 0f);
             Image back = backGo.GetComponent<Image>();
             back.color = Color.black;
             back.raycastTarget = false;
@@ -265,7 +225,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (_rightRadarLabel != null)
             {
                 string label = radarFeedLive
-                    ? VanillaRadarFeed.GetStatusLabel()
+                    ? VanillaRadarFeed.GetStatusLabel().Replace("RADAR MAP  ", "RADAR / ")
                     : RadarOverlay.GetActiveInteriorFloorLabel();
                 if (!string.Equals(_rightRadarLabel.text, label, System.StringComparison.Ordinal))
                 {
@@ -288,18 +248,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
         }
 
-        private static bool ShouldRenderRightCompositor(float now, bool monitorVisible)
-        {
-            if (_rightCompositorDirty)
-                return true;
-            if (MonitorFocus.IsStationRadarLookActive &&
-                _nextRightCompositorRenderAt - now > RightFocusedCompositorIntervalSeconds)
-            {
-                return true;
-            }
-            return now >= _nextRightCompositorRenderAt;
-        }
-
         private static float ResolveRightCompositorInterval(bool monitorVisible)
         {
             if (MonitorFocus.IsFocused)
@@ -311,48 +259,43 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 : HiddenAmbientCompositorIntervalSeconds;
         }
 
-        private static void RenderMonitorTextures(float now, bool monitorVisible)
+        /// <summary>
+        /// CctvRenderScheduler callback for <see cref="CctvRenderClient.LeftCompositor"/>
+        /// (#1219 G4). Runs the compositor pass work that used to sit beside the render in
+        /// Tick, so it keeps render cadence, then renders the lower-left compositor.
+        /// </summary>
+        internal static bool RenderScheduledLeftCompositor()
         {
+            if (_leftCamera == null || !_cctvModeActive)
+                return false;
+
+            float now = Time.unscaledTime;
+            SyncRightMonitor(_scheduledAllowRadarWork);
+            RefreshLeftCameraLabel(now, _scheduledMonitorVisible);
             try
             {
-                RunDisplayPerfStep("CCTVVanillaMonitorDisplay.RenderMonitorTextures.left", () => _leftCamera?.Render());
+                _leftCamera.Render();
             }
             catch (Exception ex) { SurveillanceBootstrap.Log?.LogWarning($"[LethalCCTV] Lower-left CCTV monitor render failed: {ex.Message}"); }
-
-            if (ShouldRenderRightCompositor(now, monitorVisible))
-            {
-                try
-                {
-                    RunDisplayPerfStep("CCTVVanillaMonitorDisplay.RenderMonitorTextures.right", () => _rightCamera?.Render());
-                    _nextRightCompositorRenderAt = now + ResolveRightCompositorInterval(monitorVisible);
-                    _rightCompositorDirty = false;
-                }
-                catch (Exception ex) { SurveillanceBootstrap.Log?.LogWarning($"[LethalCCTV] Right CCTV monitor render failed: {ex.Message}"); }
-            }
+            PinLowerLeftVideoTexture();
+            _compositorDirty = false;
+            _lastCompositorRenderAt = now;
+            return true;
         }
 
-        private static void RunDisplayPerfStep(string stepName, System.Action action)
+        /// <summary>CctvRenderScheduler callback for <see cref="CctvRenderClient.RightCompositor"/>.</summary>
+        internal static bool RenderScheduledRightCompositor()
         {
-            if (action == null)
-                return;
+            if (_rightCamera == null || !_cctvModeActive)
+                return false;
 
-            if (!MonitorFocus.IsFocused)
-            {
-                action();
-                return;
-            }
-
-            long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                action();
+                _rightCamera.Render();
+                _rightCompositorDirty = false;
             }
-            finally
-            {
-                FocusPerfProbe.RecordStep(
-                    stepName,
-                    System.Diagnostics.Stopwatch.GetTimestamp() - startedAt);
-            }
+            catch (Exception ex) { SurveillanceBootstrap.Log?.LogWarning($"[LethalCCTV] Right CCTV monitor render failed: {ex.Message}"); }
+            return true;
         }
 
     }

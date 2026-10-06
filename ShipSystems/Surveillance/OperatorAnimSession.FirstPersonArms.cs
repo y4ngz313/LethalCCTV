@@ -57,9 +57,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (!_interactionsApiUsesDedicatedViewmodel)
                 SyncApiShoulderCapPlugs();
 
-            float clipTime = ResolveEnterClipPresentationSeconds();
+            if (_apiEnterSpeedOwned && (_windingDown || (!_isLocal &&
+                Time.unscaledTime - _interactionsApiStartedAt >= MonitorFocus.OperatorEnterDurationSeconds)))
+                RestoreApiEnterAnimatorSpeed();
+
+            float clipTime = Mathf.Max(0f, MonitorFocus.EnterPresentationClockSeconds);
             if (_isLocal && !_interactionsApiFeedFlipFired &&
-                clipTime >= CCTVOperatorInteractionsBridge.EnterPressContactSeconds)
+                clipTime >= CctvIntroTiming.PressContact)
             {
                 _interactionsApiFeedFlipFired = true;
                 bool pendingBefore = MonitorFocus.IsStationFeedFlipPending;
@@ -90,6 +94,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // reconstruction preserves animator-driven target motion).
             if (!_interactionsApiUsesDedicatedViewmodel)
             {
+                // The API manifest weights full-body/first-person layers only.
+                // CCTVLeftHand (the authored RIGHT-button layer) defaults to zero.
+                SetLayerWeight(_buttonPressLayer, !_windingDown && IsRightHandActionPressWindowActive() ? 1f : 0f);
                 SetFloat(JoystickXHash, _joystickSmoothed.x);
                 SetFloat(JoystickYHash, _joystickSmoothed.y);
             }
@@ -856,12 +863,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
 
             bool enterTransitionActive = _active && !MonitorFocus.IsEnterCameraPathComplete;
-            // API mode hides through enter AND exit (Test 33 restored the exit
-            // half): during the exit retract the right arm twisted through
-            // frame and its open shoulder cap showed in the last frames. The
-            // right hand rests below frame during control, so hiding again at
-            // exit start is invisible; control keeps the arm visible.
-            bool sessionOrTransitionActive = _windingDown || enterTransitionActive;
+            // Both backends reveal the right arm only for an accepted action.
+            // Keep the existing entry/exit hide, including the exit retract.
+            bool sessionOrTransitionActive = _windingDown || enterTransitionActive || !IsRightHandActionPressWindowActive();
             bool shouldHide = Y4NGZPlayerAnimationBridge.HideRightFirstPersonArmDuringEnterAndExit &&
                 sessionOrTransitionActive;
             if (shouldHide)
@@ -1173,6 +1177,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 Vector3 desiredMidPosition = rootPosition +
                     aimDirection * elbowAlong + poleDirection * elbowHeight;
 
+                // Keep the elbow behind the wrist on the same reach circle.
+                // Reject an impossible fold without changing bone lengths or
+                // adding a competing shoulder translation.
+                Transform station = CCTVOperatorStation.OperatorPoseAnchor?.parent;
+                if (station != null && !CctvControlGeometry.TryKeepElbowBehindWrist(
+                    rootPosition + aimDirection * elbowAlong, aimDirection, elbowHeight,
+                    desiredMidPosition, solvedTarget, station.right, out desiredMidPosition)) return;
+
                 Vector3 currentUpperDirection = chain.Mid.position - rootPosition;
                 Vector3 desiredUpperDirection = desiredMidPosition - rootPosition;
                 if (currentUpperDirection.sqrMagnitude > 0.000001f &&
@@ -1223,90 +1235,32 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal void TickFirstPersonHandsAfterCamera()
         {
-            if (_interactionsApiMode)
+            if (!_isLocal || (!_active && !_windingDown) ||
+                (_interactionsApiMode && _interactionsApiUsesDedicatedViewmodel)) return;
+            ApplyInteractionsApiArmsRootStationPin();
+            if (Y4NGZPlayerAnimationBridge.IsFirstPersonHandEditModeActive)
             {
-                if (_interactionsApiUsesDedicatedViewmodel)
-                    return;
-
-                ApplyInteractionsApiArmsRootStationPin();
-                if (_active && !_windingDown && MonitorFocus.IsEnterCameraPathComplete)
-                    ApplyFirstPersonLeftHandTuning(allowInteractionsApi: true);
-                ApplyInteractionsApiLeverControlReachAssist();
-                // FINAL skeletal writer for the API-mode frame. The engine's
-                // animator/rig pass, mutually-exclusive root placement, and
-                // station-space target writes have all completed. The
-                // presentation-only shoulder scale is reasserted after this
-                // analytic solve without changing any bones or targets. The
-                // local third-person head scale is the final presentation
-                // write so the live-body animator cannot reintroduce it.
-                ApplyManualFirstPersonArmIk();
-                // Test 38: the API-mode frame never reaches
-                // FinishFirstPersonArmFrame (this branch returns), so the
-                // press-bottom sample armed by the pin sat pending forever and
-                // zero [PressContact] lines were logged. Post-solve is HERE.
-                LogApiPressContactPostSolveSample();
-                LogApiLeverContactPostSolveSample();
-                ApplyRightArmPresentationHideAfterManualIk();
-                ApplyHeadPresentationHideAfterManualIk();
-                return;
+                ApplyFirstPersonLeftHandTuning(allowInteractionsApi: true);
+                ApplyFirstPersonRightHandTuning(allowInteractionsApi: true);
             }
-
-            if (!_isLocal || _animator == null)
-                return;
-
-            _handTraceDriverEntryCount++;
-            RefreshFirstPersonPresentationRemap();
-            TraceHandSnapshot("B-post-camera/pre-driver");
-
-            // The engine's natural animator/graph pass has already run, and
-            // MonitorFocus has glued the arms root to the final camera pose.
-            // Reassert that glue before any target writes. From this point to
-            // the C trace, target transforms are the only writers until the
-            // one final manual solve below.
-            ReassertFirstPersonArmsPresentation();
-            _shoulderAnchorAppliedFrame = -1;
-            ApplyFirstPersonShoulderAnchor();
-            ApplyLeverPhaseLeftShoulderOffset();
-            EnforceFirstPersonArmsAnchoredOrHidden();
-
-            bool rightActionPressOwnsTarget = IsRightHandActionPressWindowActive();
-            if (_windingDown)
-            {
-                if (_exitTriggered)
-                {
-                    ApplyExitHandDrive(pinRightHandToRest: !rightActionPressOwnsTarget);
-                    if (rightActionPressOwnsTarget)
-                        ApplyFirstPersonRightHandTuning();
-                }
-                else if (rightActionPressOwnsTarget)
-                {
-                    // Preserve the round-15 left-hand hold while the higher-
-                    // precedence Blue/Green press remains the sole right-target
-                    // writer. HoldWindDownHandTargets itself stays untouched.
-                    HoldWindDownLeftHandTargetDuringRightHandPress();
-                    ApplyFirstPersonRightHandTuning();
-                }
-                else
-                    HoldWindDownHandTargets();
-                FinishFirstPersonArmFrame();
-                TraceHandSnapshot("C-post-driver/final-manual-ik");
-                LogExitArmsFrame("winding-down");
-                return;
-            }
-
-            if (!_active)
-                return;
-
-            ApplyEnterHandDrive();
-            ApplyFirstPersonLeftHandTuning();
-            if (rightActionPressOwnsTarget)
-                ApplyFirstPersonRightHandTuning();
-            else
-                PinRightHandToRestPose(ResolveFirstPersonRightHandTarget());
-            LogFirstPersonTargetCalibrationOnce();
-            FinishFirstPersonArmFrame();
-            TraceHandSnapshot("C-post-driver/final-manual-ik");
+            ApplyManualFirstPersonArmIk();
+            LogApiLeverContactPostSolveSample();
+            ApplyRightArmPresentationHideAfterManualIk();
+            ApplyHeadPresentationHideAfterManualIk();
+            if (Player != null)
+                MonitorFocus.LogPendingViewFraming(Player.gameplayCamera, _manualLeftArmIk?.Root, _manualRightArmIk?.Root);
         }
 
+        internal void PrepareFirstPersonHandsForRender(Camera camera)
+        {
+            if (!_isLocal || Player == null || camera != Player.gameplayCamera ||
+                (!_active && !_windingDown) || (!_controllerApplied && !_interactionsApiMode) ||
+                (_interactionsApiMode && _interactionsApiUsesDedicatedViewmodel)) return;
+            // Interactions/RigBuilder and vanilla lever animation may evaluate
+            // after our LateUpdate. Reassert the current absolute pose at the
+            // gameplay render boundary without advancing the input/animation clock.
+            _operatorPoseFrame = -1;
+            TickFirstPersonHandsAfterCamera();
+        }
     }
 }

@@ -22,7 +22,6 @@ namespace Y4NGZCompany.Facility.Cameras
     public static class InteriorSupportCameraInjector
     {
         private const float TargetEndpointToleranceM = 0.55f;
-        private const float EmergencySurfaceInsetM = 0.28f;
         private const float EmergencyMountClearRadiusM = 0.16f;
         private const float EmergencyWallMountHeightM = 2.35f;
         private const float EmergencyWallCastDistanceM = 18f;
@@ -53,6 +52,10 @@ namespace Y4NGZCompany.Facility.Cameras
 
         public static List<SpawnResult> EnsureCamerasInTiles(System.Collections.IEnumerable tiles)
         {
+            // #716 A6 / MINOR 5. Same gate as the budgeted path, but this entry point is
+            // synchronous and has no way to wait; say so at Debug rather than spin.
+            WarnIfSynchronousPathCannotWait(nameof(EnsureCamerasInTiles));
+
             var results = new List<SpawnResult>();
             if (tiles == null) return results;
 
@@ -138,7 +141,8 @@ namespace Y4NGZCompany.Facility.Cameras
                     tile, cameraIndex, chosen.WorldPos, chosen.WorldRot,
                     chosen.CornerId, chosen.CornerLocal, chosen.MountMode, chosen.RoomHeightM);
                 CameraPlacementReviewStore.ApplyCandidateDiagnostics(
-                    holder, chosen, usingExpandedFallback ? "support-expanded" : "support-strict");
+                    holder, chosen, usingExpandedFallback ? "support-expanded" : "support-strict",
+                    usingExpandedFallback ? "support-expanded-relaxed" : "support-strict");
                 QuadCameraAssignment.RegisterSupplementaryCamera(holder);
                 Y4NGZCompany.Facility.Security.CctvSecurityCameraRegistry.RegisterSupplementaryCamera(holder);
                 cameraSnapshot.Add(holder);
@@ -148,16 +152,32 @@ namespace Y4NGZCompany.Facility.Cameras
             return results;
         }
 
+        /// <summary>#716 A6 / MINOR 5. Marks the enumerator below as being driven synchronously,
+        /// so its frame wait is bounded to zero iterations instead of spinning. Set and cleared
+        /// around a single synchronous drive on the main thread.</summary>
+        private static bool _synchronousDrive;
+
         public static List<SpawnResult> EnsureCamerasForSupportPoses(System.Collections.IEnumerable supportPoses)
         {
+            WarnIfSynchronousPathCannotWait(nameof(EnsureCamerasForSupportPoses));
+
             var results = new List<SpawnResult>();
             IEnumerator routine = EnsureCamerasForSupportPosesBudgeted(supportPoses, result =>
             {
                 if (result is SpawnResult spawnResult)
                     results.Add(spawnResult);
             }, null);
-            while (routine.MoveNext())
+            bool previousDrive = _synchronousDrive;
+            _synchronousDrive = true;
+            try
             {
+                while (routine.MoveNext())
+                {
+                }
+            }
+            finally
+            {
+                _synchronousDrive = previousDrive;
             }
 
             return results;
@@ -202,6 +222,32 @@ namespace Y4NGZCompany.Facility.Cameras
             }
             PlacementMasks fallbackMasks = PlacementMask.ResolveExpandedMountFallback(masks, false);
 
+            // #716 A6 / #1283. Two hazards, one wait. (1) A camera snapshot taken while the
+            // placement pass is running derives a baseIndex the pipeline is still about to
+            // hand out. (2) The security registry rebuild begins with Cameras.Clear(), so a
+            // supplementary camera registered before it is wiped for the round. The camera
+            // pass and its CamerasReady follow-ups (the rebuild among them) now run inside
+            // OnFinishedGeneratingDungeon, so a healthy round finds the gate open; it stays as
+            // the guard. SecurityRegistryReadyForRound is raised only after RegisterCameras
+            // returns, so waiting on both conditions puts this pass strictly after the rebuild.
+            // Bounded so a pipeline that dies mid-run cannot hang support spawning.
+            // MINOR 5: zero-bounded on the synchronous drive, where yielding cannot advance a
+            // frame and the loop would only spin to its bound and emit a false warning.
+            int waitBound = _synchronousDrive ? 0 : MaxSpawnPipelineWaitFrames;
+            int pipelineWaitFrames = 0;
+            while (!SupportInjectionGateOpen() && pipelineWaitFrames < waitBound)
+            {
+                pipelineWaitFrames++;
+                yield return null;
+            }
+            if (waitBound > 0 && pipelineWaitFrames >= waitBound)
+            {
+                SurveillanceBootstrap.Log.LogWarning(
+                    "[LethalCCTV] Support camera injection proceeded before the dungeon camera pipeline " +
+                    $"and security registry rebuild finished ({MaxSpawnPipelineWaitFrames} frames); " +
+                    "camera indices may collide and supplementary cameras may be dropped from the registry.");
+            }
+
             List<CCTVCamera> cameraSnapshot = BuildCameraSnapshot();
             int baseIndex = NextCameraIndex(cameraSnapshot);
             var servedTiles = new HashSet<Tile>();
@@ -227,14 +273,16 @@ namespace Y4NGZCompany.Facility.Cameras
                         existing.PlacementSource = "support-retarget";
                         servedTiles.Add(tile);
                         Emit(new SpawnResult(tile, existing, "retargeted-existing", supportPose.Source));
-                        SurveillanceBootstrap.Log.LogInfo(
+                        // #716 F5: one line per support pose is placement tracing, not news.
+                        SurveillanceBootstrap.Log.LogDebug(
                             $"[LethalCCTV] SUPPORT_CAMERA_RETARGET existing='{existing.name}' tile='{tile.name}' target=({supportPose.InteractionPoint.x:F2},{supportPose.InteractionPoint.y:F2},{supportPose.InteractionPoint.z:F2}) los=clear rolePoseSource={supportPose.Source}");
                         if (shouldYield != null && shouldYield())
                             yield return null;
                         continue;
                     }
 
-                    SurveillanceBootstrap.Log.LogInfo(
+                    // #716 F5: one line per support pose is placement tracing, not news.
+                    SurveillanceBootstrap.Log.LogDebug(
                         $"[LethalCCTV] SUPPORT_CAMERA_RETARGET_REJECT existing='{existing.name}' tile='{tile.name}' reason={existingLosReason} target=({supportPose.InteractionPoint.x:F2},{supportPose.InteractionPoint.y:F2},{supportPose.InteractionPoint.z:F2}) rolePoseSource={supportPose.Source}");
                 }
 
@@ -245,18 +293,29 @@ namespace Y4NGZCompany.Facility.Cameras
                 SurfaceMount.Candidate chosen;
                 bool usingExpandedFallback = false;
                 bool usingEmergencyFallback = false;
-                bool usingForcedEmergencyFallback = false;
+                string supportTier = null;
                 string emergencyRejectReason = null;
-                bool haveChoice = TryChooseSupportCameraCandidate(tile, box, i, in placementParams, in masks, in semantic, supportPose, out chosen);
+                bool haveChoice = TryChooseSupportCameraCandidate(tile, box, i, in placementParams, in masks, in semantic, supportPose, out chosen, out bool relaxedPass);
+                if (haveChoice)
+                    supportTier = relaxedPass ? "support-relaxed" : "support-strict";
+                // #1271: each attempt below is a full SurfaceMount pass; give the frame back
+                // between attempts once the caller's budget is spent. The attempts have no side
+                // effects on each other, and this loop already yields between poses.
+                if (!haveChoice && shouldYield != null && shouldYield())
+                    yield return null;
                 if (!haveChoice && fallbackMasks.Valid)
                 {
-                    haveChoice = TryChooseSupportCameraCandidate(tile, box, i, in placementParams, in fallbackMasks, in semantic, supportPose, out chosen);
+                    haveChoice = TryChooseSupportCameraCandidate(tile, box, i, in placementParams, in fallbackMasks, in semantic, supportPose, out chosen, out relaxedPass);
                     usingExpandedFallback = haveChoice;
+                    if (haveChoice)
+                        supportTier = relaxedPass ? "support-expanded-relaxed" : "support-expanded";
+                    if (!haveChoice && shouldYield != null && shouldYield())
+                        yield return null;
                 }
                 if (!haveChoice)
                 {
                     haveChoice = TryChooseEmergencySupportCameraCandidate(
-                        tile, box, in masks, supportPose, out chosen, out emergencyRejectReason, out usingForcedEmergencyFallback);
+                        tile, box, in masks, supportPose, out chosen, out emergencyRejectReason, out supportTier);
                     usingEmergencyFallback = haveChoice;
                 }
                 if (!haveChoice)
@@ -270,33 +329,23 @@ namespace Y4NGZCompany.Facility.Cameras
                     continue;
                 }
 
-                if (usingForcedEmergencyFallback
-                    && !string.IsNullOrEmpty(supportPose.Source)
-                    && supportPose.Source.IndexOf("mainframe", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    Emit(new SpawnResult(tile, null, "mainframe-forced-emergency-rejected", supportPose.Source));
-                    if (shouldYield != null && shouldYield())
-                        yield return null;
-                    continue;
-                }
-
                 Quaternion aimedRot = RotationToward(chosen.WorldPos, supportPose.InteractionPoint, chosen.WorldRot);
                 int cameraIndex = baseIndex++;
                 CCTVCamera holder = InstantiateAtPose(
                     tile, cameraIndex, chosen.WorldPos, aimedRot,
                     chosen.CornerId, chosen.CornerLocal, chosen.MountMode, chosen.RoomHeightM);
                 string supportSource = usingEmergencyFallback
-                    ? (usingForcedEmergencyFallback ? "support-emergency-forced" : "support-emergency")
+                    ? "support-emergency"
                     : (usingExpandedFallback ? "support-expanded" : "support-strict");
                 CameraPlacementReviewStore.ApplyCandidateDiagnostics(
-                    holder, chosen, supportSource);
+                    holder, chosen, supportSource, supportTier);
                 QuadCameraAssignment.RegisterSupplementaryCamera(holder);
                 Y4NGZCompany.Facility.Security.CctvSecurityCameraRegistry.RegisterSupplementaryCamera(holder);
                 cameraSnapshot.Add(holder);
                 servedTiles.Add(tile);
                 Emit(new SpawnResult(tile, holder, null, supportPose.Source));
                 SurveillanceBootstrap.Log.LogInfo(
-                    $"[LethalCCTV] SUPPORT_CAMERA_ACCEPT cam={cameraIndex} tile='{tile.name}' target=({supportPose.InteractionPoint.x:F2},{supportPose.InteractionPoint.y:F2},{supportPose.InteractionPoint.z:F2}) candidate={chosen.Kind} source={supportSource} los={(usingForcedEmergencyFallback ? "forced" : "clear")} pos=({chosen.WorldPos.x:F2},{chosen.WorldPos.y:F2},{chosen.WorldPos.z:F2})");
+                    $"[LethalCCTV] SUPPORT_CAMERA_ACCEPT cam={cameraIndex} tile='{tile.name}' target=({supportPose.InteractionPoint.x:F2},{supportPose.InteractionPoint.y:F2},{supportPose.InteractionPoint.z:F2}) candidate={chosen.Kind} source={supportSource} tier={supportTier} los=clear pos=({chosen.WorldPos.x:F2},{chosen.WorldPos.y:F2},{chosen.WorldPos.z:F2})");
                 if (shouldYield != null && shouldYield())
                     yield return null;
             }
@@ -320,6 +369,40 @@ namespace Y4NGZCompany.Facility.Cameras
                     return cam;
             }
             return null;
+        }
+
+        /// <summary>#716 A6. Upper bound on how long the budgeted support pass will wait for
+        /// the camera pipeline and its registry rebuild before taking its snapshot anyway.
+        /// #1283: both complete inside the dungeon-finished event, so a healthy round never
+        /// waits; 600 frames is roughly ten seconds of headroom.</summary>
+        private const int MaxSpawnPipelineWaitFrames = 600;
+
+        /// <summary>#716 A6. The support-injection gate: the placement pass has finished
+        /// AND this round's security registry rebuild has run. See
+        /// <c>SurveillanceBootstrap.SecurityRegistryReadyForRound</c> for why the second half
+        /// is required - the registry rebuild clears the camera list, so anything that
+        /// registers a supplementary camera before it is silently discarded.</summary>
+        private static bool SupportInjectionGateOpen()
+        {
+            return !DungeonCameraSpawner.SpawnPipelineInProgress
+                && SurveillanceBootstrap.SecurityRegistryReadyForRound;
+        }
+
+        /// <summary>#716 A6 / MINOR 5. Synchronous entry points drive their enumerator with
+        /// <c>while (MoveNext())</c>, so a <c>yield return null</c> inside never advances a
+        /// frame and a wait loop would spin to its bound and then emit a false warning. They
+        /// therefore check the gate once and proceed regardless, logging at Debug: the caller
+        /// that chose the synchronous path is the one that gave up the ability to wait.</summary>
+        private static void WarnIfSynchronousPathCannotWait(string entryPoint)
+        {
+            if (SupportInjectionGateOpen())
+                return;
+
+            SurveillanceBootstrap.Log?.LogDebug(
+                $"[LethalCCTV] {entryPoint} ran synchronously before the dungeon camera pipeline " +
+                "and security registry rebuild finished; it cannot wait on a synchronous call, so " +
+                "camera indices may collide and supplementary cameras may be dropped from the registry. " +
+                "Prefer EnsureCamerasForSupportPosesBudgeted, which waits.");
         }
 
         private static int NextCameraIndex(IReadOnlyList<CCTVCamera> cameraSnapshot)
@@ -380,14 +463,17 @@ namespace Y4NGZCompany.Facility.Cameras
             in PlacementMasks masks,
             in CameraSemanticContext semantic,
             PlacementPose supportPose,
-            out SurfaceMount.Candidate chosen)
+            out SurfaceMount.Candidate chosen,
+            out bool relaxedPass)
         {
             chosen = default;
+            relaxedPass = false;
             List<SurfaceMount.Candidate> candidates = SurfaceMount.Compute(
                 tile, box, sortedIndex, in placementParams, in masks, in semantic,
                 relaxed: false, debug: false);
             if (candidates == null || candidates.Count == 0)
             {
+                relaxedPass = true;
                 candidates = SurfaceMount.Compute(
                     tile, box, sortedIndex, in placementParams, in masks, in semantic,
                     relaxed: true, debug: false);
@@ -433,6 +519,10 @@ namespace Y4NGZCompany.Facility.Cameras
             return true;
         }
 
+        // Last resort for a support pose: a raycast-backed wall or ceiling mount
+        // that still passes SurfaceMount.IsStructuralPatch (#1313) and the
+        // free-standing probe against the tile-local box (#1367). There is no
+        // unbacked pose; with no structural surface the pose gets no camera.
         private static bool TryChooseEmergencySupportCameraCandidate(
             Tile tile,
             Bounds box,
@@ -440,11 +530,11 @@ namespace Y4NGZCompany.Facility.Cameras
             PlacementPose supportPose,
             out SurfaceMount.Candidate chosen,
             out string rejectReason,
-            out bool forcedEmergency)
+            out string tier)
         {
             chosen = default;
             rejectReason = null;
-            forcedEmergency = false;
+            tier = null;
             if (tile == null || !masks.Valid)
             {
                 rejectReason = "emergency-invalid-input";
@@ -458,14 +548,17 @@ namespace Y4NGZCompany.Facility.Cameras
             float floorY = EstimateFloorY(tile, supportPose.Position, in masks);
             Vector3 target = ResolveSupportAimPoint(supportPose);
 
-            if (TryChooseEmergencyWallCandidate(tile, in masks, supportPose, target, forward, right, floorY, out chosen, out rejectReason))
+            if (TryChooseEmergencyWallCandidate(tile, box, in masks, supportPose, target, forward, right, floorY, out chosen, out rejectReason))
+            {
+                tier = "support-emergency-wall";
                 return true;
+            }
 
-            if (TryChooseEmergencyCeilingCandidate(tile, in masks, supportPose, target, forward, right, floorY, out chosen, out rejectReason))
+            if (TryChooseEmergencyCeilingCandidate(tile, box, in masks, supportPose, target, forward, right, floorY, out chosen, out rejectReason))
+            {
+                tier = "support-emergency-ceiling";
                 return true;
-
-            if (TryChooseEmergencyInspectionCandidate(tile, box, in masks, supportPose, target, forward, right, floorY, out chosen, out rejectReason, out forcedEmergency))
-                return true;
+            }
 
             if (string.IsNullOrEmpty(rejectReason))
                 rejectReason = "emergency-no-clear-pose";
@@ -474,6 +567,7 @@ namespace Y4NGZCompany.Facility.Cameras
 
         private static bool TryChooseEmergencyWallCandidate(
             Tile tile,
+            Bounds box,
             in PlacementMasks masks,
             PlacementPose supportPose,
             Vector3 target,
@@ -520,7 +614,18 @@ namespace Y4NGZCompany.Facility.Cameras
                 }
                 normalH.Normalize();
 
-                Vector3 mountPos = hit.point + hit.normal.normalized * EmergencySurfaceInsetM;
+                if (!SurfaceMount.IsStructuralPatch(in hit, SurfaceMount.WallPatchHalfExtents, masks.MountMask, out string patchReason))
+                {
+                    rejectReason = "emergency-wall-patch:" + patchReason;
+                    continue;
+                }
+                if (SurfaceMount.IsFreeStandingSurface(in hit, box, tile.Placement, masks.MountMask, out _))
+                {
+                    rejectReason = "emergency-wall-free-standing";
+                    continue;
+                }
+
+                Vector3 mountPos = hit.point + hit.normal.normalized * SurfaceMount.SurfaceInsetM;
                 if (!ContainsTileXZ(tile.Bounds, mountPos, 0.2f))
                 {
                     rejectReason = "emergency-wall-outside-tile";
@@ -553,6 +658,7 @@ namespace Y4NGZCompany.Facility.Cameras
 
         private static bool TryChooseEmergencyCeilingCandidate(
             Tile tile,
+            Bounds box,
             in PlacementMasks masks,
             PlacementPose supportPose,
             Vector3 target,
@@ -591,7 +697,18 @@ namespace Y4NGZCompany.Facility.Cameras
                     continue;
                 }
 
-                Vector3 mountPos = hit.point + hit.normal.normalized * EmergencySurfaceInsetM;
+                if (!SurfaceMount.IsStructuralPatch(in hit, SurfaceMount.CeilingPatchHalfExtents, masks.MountMask, out string patchReason))
+                {
+                    rejectReason = "emergency-ceiling-patch:" + patchReason;
+                    continue;
+                }
+                if (SurfaceMount.IsFreeStandingSurface(in hit, box, tile.Placement, masks.MountMask, out _))
+                {
+                    rejectReason = "emergency-ceiling-free-standing";
+                    continue;
+                }
+
+                Vector3 mountPos = hit.point + hit.normal.normalized * SurfaceMount.SurfaceInsetM;
                 if (!HasMountClearance(mountPos, in masks))
                 {
                     rejectReason = "emergency-ceiling-embedded";
@@ -615,88 +732,6 @@ namespace Y4NGZCompany.Facility.Cameras
             }
 
             return false;
-        }
-
-        private static bool TryChooseEmergencyInspectionCandidate(
-            Tile tile,
-            Bounds box,
-            in PlacementMasks masks,
-            PlacementPose supportPose,
-            Vector3 target,
-            Vector3 forward,
-            Vector3 right,
-            float floorY,
-            out SurfaceMount.Candidate chosen,
-            out string rejectReason,
-            out bool forcedEmergency)
-        {
-            chosen = default;
-            rejectReason = null;
-            forcedEmergency = false;
-            float roomHeight = box.size.y > 0.1f ? box.size.y : tile.Bounds.size.y;
-            float cameraHeight = floorY + Mathf.Clamp(Mathf.Min(roomHeight - 0.6f, 2.25f), 1.65f, 2.35f);
-            float[] distances = { 2.8f, 2.1f, 1.45f, 1.05f };
-            float[] lateralOffsets = { 0f, 0.55f, -0.55f };
-
-            for (int d = 0; d < distances.Length; d++)
-            {
-                for (int l = 0; l < lateralOffsets.Length; l++)
-                {
-                    Vector3 mountPos = supportPose.Position + forward * distances[d] + right * lateralOffsets[l];
-                    mountPos.y = cameraHeight;
-                    mountPos = ClampTileXZ(tile.Bounds, mountPos, 0.45f);
-                    if (!HasMountClearance(mountPos, in masks))
-                    {
-                        rejectReason = "emergency-inspection-embedded";
-                        continue;
-                    }
-
-                    Quaternion rotation = RotationToward(mountPos, target, Quaternion.LookRotation(-forward, Vector3.up));
-                    if (!HasSupportLineOfSight(mountPos, rotation * Vector3.forward, supportPose, out string losReason))
-                    {
-                        rejectReason = "emergency-inspection-" + losReason;
-                        continue;
-                    }
-
-                    chosen = BuildEmergencyCandidate(
-                        tile, in masks, mountPos, rotation, CameraMountMode.Wall,
-                        SurfaceMount.SurfaceKind.Wall, -forward,
-                        "emergency-inspection", -1,
-                        cornerId: 990 + d * 3 + l);
-                    return true;
-                }
-            }
-
-            float[] forcedDistances = { 1.2f, 0.95f, 1.45f };
-            float[] forcedOffsets = { 0f, 0.45f, -0.45f };
-            Vector3 forcedPos = supportPose.Position + forward * forcedDistances[0];
-            forcedPos.y = cameraHeight;
-            forcedPos = ClampTileXZ(tile.Bounds, forcedPos, 0.35f);
-            for (int d = 0; d < forcedDistances.Length; d++)
-            {
-                for (int l = 0; l < forcedOffsets.Length; l++)
-                {
-                    Vector3 candidatePos = supportPose.Position + forward * forcedDistances[d] + right * forcedOffsets[l];
-                    candidatePos.y = cameraHeight;
-                    candidatePos = ClampTileXZ(tile.Bounds, candidatePos, 0.35f);
-                    forcedPos = candidatePos;
-                    if (HasMountClearance(candidatePos, in masks))
-                    {
-                        d = forcedDistances.Length;
-                        break;
-                    }
-                }
-            }
-
-            Quaternion forcedRotation = RotationToward(forcedPos, target, Quaternion.LookRotation(-forward, Vector3.up));
-            chosen = BuildEmergencyCandidate(
-                tile, in masks, forcedPos, forcedRotation, CameraMountMode.Wall,
-                SurfaceMount.SurfaceKind.Wall, -forward,
-                "emergency-inspection-forced", -1,
-                cornerId: 999);
-            rejectReason = "emergency-inspection-forced";
-            forcedEmergency = true;
-            return true;
         }
 
         private static SurfaceMount.Candidate BuildEmergencyCandidate(

@@ -43,6 +43,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // QuadMonitor.ApplyNightVisionParams guards every write with
         // Material.HasProperty, so this file is safe to ship against an older
         // bundle: the six that do not exist there are simply skipped.
+        internal static readonly int NightVisionBlendPropertyId = Shader.PropertyToID("_NightVisionBlend");
         internal static readonly int ColorRetentionPropertyId = Shader.PropertyToID("_ColorRetention");
         internal static readonly int ScanlineStrengthPropertyId = Shader.PropertyToID("_ScanlineStrength");
         internal static readonly int NoiseStrengthPropertyId = Shader.PropertyToID("_NoiseStrength");

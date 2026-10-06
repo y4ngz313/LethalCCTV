@@ -14,11 +14,9 @@ namespace Y4NGZCompany.Facility.Cameras
 {
     internal sealed partial class CCTVCameraVisual : MonoBehaviour
     {
-        private const float EstimatedSurfaceInsetM = 0.28f;
         private const float MinSnapOffsetM = 0.05f;
         private const float MaxSnapOffsetCeilingM = 3.0f;
 
-        private const float TargetImportedCameraMaxDimensionM = 0.48f;
         // Gap between the prefab's rearmost renderer face and the mount
         // surface. Anything past ~1cm reads as the camera floating off its
         // wall, so keep this just large enough to avoid z-fighting.
@@ -39,7 +37,7 @@ namespace Y4NGZCompany.Facility.Cameras
         private static readonly HashSet<Camera> s_cctvFeedCameras = new HashSet<Camera>();
         private static bool s_renderPipelineHooksRegistered;
         private static int s_physicalCameraHideDepth;
-        // Visible rotating dome per feed camera, so world-space indicators (the
+        // Visible rotating head per feed camera, so world-space indicators (the
         // detection warning beam) can mount on the prop the player actually
         // sees instead of the invisible feed transform.
         private static readonly Dictionary<CCTVCamera, Transform> s_rotatingHeadsByHolder = new Dictionary<CCTVCamera, Transform>(16);
@@ -47,19 +45,15 @@ namespace Y4NGZCompany.Facility.Cameras
         private readonly List<Renderer> _registeredPhysicalCameraRenderers = new List<Renderer>(16);
         private CCTVCamera _holder;
         private GameObject _visualRoot;
-        // Visual gimbal limit for the bundled dome head: the spherical housing
-        // window only exposes the dome's central cone, so the prop's aim delta
-        // from the assembled rest pose is clamped even when the feed camera
-        // sweeps further.
+        // The feed can sweep further than the physical prop's neutral-aim limit.
         private const float MaxBundledAimDeltaDeg = 30f;
 
         private Transform _aimPivot;
         private bool _built;
         private bool _failed;
         private float _nextBuildAttemptAt;
-        private bool _aimPivotPositionLocked;
-        private Vector3 _neutralAimForward;
-        private Quaternion _neutralPivotRotation = Quaternion.identity;
+        private const float BuildRetryIntervalSeconds = 0.5f;
+        private Transform _bundledYoke;
         private Transform _bundledRotatingHead;
 
         // #563 impact flinch. The aim pivot's rotation is recomputed from the feed
@@ -85,6 +79,28 @@ namespace Y4NGZCompany.Facility.Cameras
             visual._holder = holder;
         }
 
+        /// <summary>#1271. Builds the prop from inside the camera placement pass, which runs
+        /// synchronously inside OnFinishedGeneratingDungeon (#1283), instead of
+        /// on the holder's first LateUpdate. Same TryBuild and the same attempt bookkeeping, so
+        /// the prop is identical and LateUpdate stays the retry path; an exception is logged
+        /// here instead of escaping into the pass, which must still raise CamerasReady.</summary>
+        internal static void BuildNow(CCTVCamera holder)
+        {
+            CCTVCameraVisual visual = holder != null ? holder.GetComponent<CCTVCameraVisual>() : null;
+            if (visual == null || !visual.enabled || visual._built || visual._failed) return;
+
+            visual._nextBuildAttemptAt = Time.unscaledTime + BuildRetryIntervalSeconds;
+            try
+            {
+                visual.TryBuild();
+            }
+            catch (Exception ex)
+            {
+                SurveillanceBootstrap.Log?.LogWarning(
+                    $"[LethalCCTV][CameraVisual] build failed for {Describe(holder)}; LateUpdate will retry. {ex}");
+            }
+        }
+
         private void LateUpdate()
         {
             if (_holder == null)
@@ -101,29 +117,22 @@ namespace Y4NGZCompany.Facility.Cameras
                 return;
             }
 
-            if (!_built && !_failed && Time.unscaledTime >= _nextBuildAttemptAt)
+            // #1271: a running placement pass builds its own props (BuildNow) under its frame
+            // budget; this is the retry path for anything it did not build.
+            if (!_built && !_failed && Time.unscaledTime >= _nextBuildAttemptAt
+                && !DungeonCameraSpawner.SpawnPipelineInProgress)
             {
-                _nextBuildAttemptAt = Time.unscaledTime + 0.5f;
+                _nextBuildAttemptAt = Time.unscaledTime + BuildRetryIntervalSeconds;
                 TryBuild();
             }
 
             if (_built && _aimPivot != null && _holder.transform != null && !_holder.IsSecurityBroken)
             {
-                Quaternion pose = _aimPivotPositionLocked
-                    ? ComputeLockedAimRotation(_holder.transform.forward)
-                    : _holder.transform.rotation;
-
-                // The flinch is applied on top of the authoritative pose, never instead of
-                // it, so the head keeps sweeping/tracking through the recoil and settles
-                // back onto the exact rotation it would have had.
                 Quaternion kick = ConsumeDamageKick();
-                if (kick != Quaternion.identity)
-                    pose *= kick;
-
-                if (_aimPivotPositionLocked)
-                    _aimPivot.rotation = pose;
+                if (_bundledYoke != null)
+                    UpdateBundledAim(_holder.transform.forward, kick);
                 else
-                    _aimPivot.SetPositionAndRotation(_holder.transform.position, pose);
+                    _aimPivot.SetPositionAndRotation(_holder.transform.position, _holder.transform.rotation * kick);
             }
             else if (_damageKickPeakDegrees > 0f)
             {
@@ -210,9 +219,7 @@ namespace Y4NGZCompany.Facility.Cameras
             _aimPivot.SetPositionAndRotation(_holder.transform.position, _holder.transform.rotation);
 
             GameObject prefab = PhysicalCameraVisualLoader.TryLoad();
-            if (prefab != null)
-                BuildBundledVisual(prefab);
-            else
+            if (prefab == null || !BuildBundledVisual(prefab))
                 BuildFallbackVisual(snap);
 
             RegisterPhysicalCameraRenderers(_visualRoot);

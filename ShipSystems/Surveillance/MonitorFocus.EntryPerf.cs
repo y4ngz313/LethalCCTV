@@ -6,10 +6,10 @@ using Y4NGZCompany.Bootstrap;
 namespace Y4NGZCompany.ShipSystems.Surveillance
 {
     /// <summary>
-    /// Focus-ENTRY frame attribution (#291). FocusPerfProbe averages steady-state
-    /// focused frames over a 5s window, which buries the one-off ~230ms entry
-    /// frame; this probe times the entry tick step by step and emits ONE line per
-    /// entry so the buckets sum to the measured TickFrame total.
+    /// Focus-ENTRY frame attribution (#291). Steady-state focused timing (the
+    /// LateUpdate slow-pass report) buries the one-off ~230ms entry frame; this
+    /// probe times the entry tick step by step and emits ONE line per entry so
+    /// the buckets sum to the measured TickFrame total.
     ///
     /// Cost model: every hook is a single bool test while not capturing, so
     /// ordinary ticks (focused or not) pay nothing measurable. Capture is armed

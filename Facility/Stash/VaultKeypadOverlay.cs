@@ -82,7 +82,7 @@ namespace Y4NGZCompany.Facility.Stash
             panelImage.color = new Color(0.04f, 0.08f, 0.10f, 0.96f);
             panelImage.raycastTarget = true;
 
-            _titleText = NewText(panel, "Title", "VAULT KEYPAD", 22f, TextAlignmentOptions.Center,
+            _titleText = NewText(panel, "Title", "COMPANY STASH KEYPAD", 22f, TextAlignmentOptions.Center,
                 new Color(0.20f, 1f, 0.40f, 1f),
                 new Vector2(16f, -560f), new Vector2(-16f, -16f));
             _displayText = NewText(panel, "Display", "_ _ _ _", 36f, TextAlignmentOptions.Center,
@@ -200,7 +200,7 @@ namespace Y4NGZCompany.Facility.Stash
             for (int i = 0; i < _entered.Length; i++) _entered[i] = -1;
             if (_titleText != null)
             {
-                _titleText.text = string.IsNullOrWhiteSpace(displayLabel) ? "VAULT KEYPAD" : displayLabel;
+                _titleText.text = string.IsNullOrWhiteSpace(displayLabel) ? "COMPANY STASH KEYPAD" : displayLabel;
             }
             if (_displayText != null) _displayText.text = "_ _ _ _";
             if (_feedbackText != null)

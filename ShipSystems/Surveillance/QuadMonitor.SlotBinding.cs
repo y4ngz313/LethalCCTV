@@ -178,15 +178,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             Push(m, NightVisionShader.FlipYPropertyId, flipY);
 
             Push(m, NightVisionShader.ColorRetentionPropertyId, cfg != null ? cfg.FeedColorRetention.Value : 0.35f);
-            Push(m, NightVisionShader.ScanlineStrengthPropertyId, cfg != null ? cfg.FeedScanlineStrength.Value : 0.055f);
-            Push(m, NightVisionShader.NoiseStrengthPropertyId, cfg != null ? cfg.FeedNoiseStrength.Value : 0.018f);
-            Push(m, NightVisionShader.VignetteStrengthPropertyId, cfg != null ? cfg.FeedVignetteStrength.Value : 0.12f);
-            Push(m, NightVisionShader.ChromaAberrationPropertyId, cfg != null ? cfg.FeedChromaAberration.Value : 0.25f);
-            Push(m, NightVisionShader.RollBarStrengthPropertyId, cfg != null ? cfg.FeedRollBarStrength.Value : 0.10f);
+            Push(m, NightVisionShader.ScanlineStrengthPropertyId, cfg != null ? cfg.FeedScanlineStrength.Value : 0.018f);
+            Push(m, NightVisionShader.NoiseStrengthPropertyId, cfg != null ? cfg.FeedNoiseStrength.Value : 0.006f);
+            Push(m, NightVisionShader.VignetteStrengthPropertyId, cfg != null ? cfg.FeedVignetteStrength.Value : 0f);
+            Push(m, NightVisionShader.ChromaAberrationPropertyId, cfg != null ? cfg.FeedChromaAberration.Value : 0f);
+            Push(m, NightVisionShader.RollBarStrengthPropertyId, cfg != null ? cfg.FeedRollBarStrength.Value : 0f);
             Push(m, NightVisionShader.RollBarSpeedPropertyId, cfg != null ? cfg.FeedRollBarSpeed.Value : 0.12f);
-            Push(m, NightVisionShader.CurvatureStrengthPropertyId, cfg != null ? cfg.FeedCurvatureStrength.Value : 0.12f);
-            Push(m, NightVisionShader.InterlaceStrengthPropertyId, cfg != null ? cfg.FeedInterlaceStrength.Value : 0.06f);
-            Push(m, NightVisionShader.DropoutStrengthPropertyId, cfg != null ? cfg.FeedDropoutStrength.Value : 0.04f);
+            Push(m, NightVisionShader.CurvatureStrengthPropertyId, cfg != null ? cfg.FeedCurvatureStrength.Value : 0f);
+            Push(m, NightVisionShader.InterlaceStrengthPropertyId, cfg != null ? cfg.FeedInterlaceStrength.Value : 0f);
+            Push(m, NightVisionShader.DropoutStrengthPropertyId, cfg != null ? cfg.FeedDropoutStrength.Value : 0f);
 
             static void Push(Material mat, int propertyId, float value)
             {

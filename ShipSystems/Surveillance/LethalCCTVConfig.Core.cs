@@ -17,22 +17,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         public Vector3 MonitorPosition => new Vector3(11.0f, 3.0f, -13.0f);
         public Quaternion MonitorRotation => Quaternion.Euler(0.0f, 90.0f, 0.0f);
 
-        internal const string ShipTerminalSection = "Ship Terminal";
+        internal const string GeneralSection = "General";
         internal const string CameraPlacementSection = "Camera Placement";
-        internal const string CameraCountsSection = "Camera Counts";
-        internal const string ShipMonitorSection = "Ship Monitor";
-        internal const string PerformanceSection = "Performance";
-        internal const string DisplaySection = "Display and Lighting";
-        internal const string PhysicalCamerasSection = "Physical Cameras";
-        internal const string OperatorControlsSection = "Operator Controls";
-        internal const string OperatorPermissionsSection = "Operator Permissions";
-        internal const string DiagnosticsSection = "Diagnostics";
         internal const string RadarSection = "Radar";
-        internal const string TrackingBoxesSection = "Tracking Boxes";
+        internal const string ShipMonitorSection = "Ship Monitor";
+        internal const string DiagnosticsSection = "Diagnostics";
 
         // === Phase 0 Diagnostics ===
         public ConfigEntry<bool> ReconLoggingEnabled { get; private set; }
         public ConfigEntry<bool> PlacementDebugLoggingEnabled { get; private set; }
+        public ConfigEntry<bool> PerformanceTimingLogging { get; private set; }
 
         // === Phase 1 — Camera Exclusion ===
         [SyncedEntryField] public SyncedEntry<bool> ExcludeEntranceTiles;
@@ -137,6 +131,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         public ConfigEntry<bool> NightVisionEnabled { get; private set; }
         public ConfigEntry<float> NightVisionGain { get; private set; }
         public ConfigEntry<bool> NightVisionAutoGain { get; private set; }
+        public ConfigEntry<bool> NightVisionAutomaticLowLight { get; private set; }
+        public ConfigEntry<bool> CCTVAmbientOcclusionEnabled { get; private set; }
         public ConfigEntry<bool> NightVisionFlipY { get; private set; }
 
         // Analog-artifact block. Every one of these maps 1:1 onto a float property
@@ -194,6 +190,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         [SyncedEntryField] public SyncedEntry<bool> AllowRemoteHacking;
 
         // === 1.1.0 - physical security and semantic tracking ===
+        [SyncedEntryField] public SyncedEntry<bool> AllCamerasPassive;
         [SyncedEntryField] public SyncedEntry<bool> BreakableCameras;
         [SyncedEntryField] public SyncedEntry<float> CameraHealth;
         [SyncedEntryField] public SyncedEntry<bool> AlarmLockdownGates;

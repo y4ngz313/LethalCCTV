@@ -123,7 +123,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                         active = directActiveProp.GetValue(null);
                 }
 
-                if (active == null) return false;
+                if (active == null || !ReadBool(active, "IsPhysicalMainframe", true)) return false;
 
                 target = active as Component;
                 if (target == null) return false;

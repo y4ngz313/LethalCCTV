@@ -13,34 +13,34 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         {
             // === Phase 1 — Camera Exclusion ===
             ExcludeEntranceTiles = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Exclude Entrance Tiles"),
+                new ConfigDefinition(CameraPlacementSection, "Exclude Main Entrance Rooms"),
                 false,
-                new ConfigDescription("If true, tiles holding an EntranceTeleport with isEntranceToBuilding == true get no CCTV camera. Default is false: entrance tiles get cameras (Overwatch can see the main entrance)."));
+                new ConfigDescription("When on, rooms that hold the main entrance get no camera. Off by default, so the main entrance is watched. Host decides."));
 
             ExcludeFireExitTiles = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Exclude Fire Exit Tiles"),
+                new ConfigDefinition(CameraPlacementSection, "Exclude Fire Exit Rooms"),
                 false,
-                new ConfigDescription("If true, tiles holding an EntranceTeleport with isEntranceToBuilding == false get no CCTV camera. Default is false: fire-exit tiles get cameras."));
+                new ConfigDescription("When on, rooms that hold a fire exit get no camera. Off by default, so fire exits are watched. Host decides."));
 
             ExcludeMineshaftTunnels = cfg.BindSyncedEntry(
                 new ConfigDefinition(CameraPlacementSection, "Exclude Mineshaft Tunnels"),
                 true,
-                new ConfigDescription("If true, tiles tagged with RoundManager.MineshaftTunnelTag are excluded. Mineshaft tunnels are long and visually uninteresting; default excludes them."));
+                new ConfigDescription("When on, the long tunnels of the mineshaft interior get no cameras. On by default, since tunnel feeds show little but rock walls. Host decides."));
 
             ExcludeTinyTiles = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Exclude Tiny Tiles"),
+                new ConfigDefinition(CameraPlacementSection, "Exclude Tiny Rooms"),
                 true,
-                new ConfigDescription("If true, tiles with one or zero used doorways AND floor area below TinyTileMaxFloorAreaM2 are excluded."));
+                new ConfigDescription("When on, tiny rooms get no camera: rooms with one or no connected doorway and a floor area under Tiny Room Max Floor Area. On by default. Host decides."));
 
             TinyTileMaxFloorAreaM2 = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Tiny Tile Max Floor Area"),
+                new ConfigDefinition(CameraPlacementSection, "Tiny Room Max Floor Area"),
                 25.0f,
-                new ConfigDescription("Floor area (x * z) threshold in square meters. Tiles below this are considered tiny when Exclude Tiny Tiles is true."));
+                new ConfigDescription("Floor area in square metres below which a room with one or no connected doorway counts as tiny. At the default of 25, that is about a 5 by 5 metre room; only used while Exclude Tiny Rooms is on. Host decides."));
 
             TileNameExclusionPatterns = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Tile Name Exclusion Patterns"),
+                new ConfigDefinition(CameraPlacementSection, "Excluded Room Names"),
                 string.Empty,
-                new ConfigDescription("Comma-separated list of substrings. If a tile's GameObject name contains any of them (case-insensitive), it's excluded. Empty by default."));
+                new ConfigDescription("Comma-separated parts of room names; any room whose name contains one of them gets no camera, ignoring upper and lower case. Empty by default, so no room is left out by name. Host decides."));
         }
 
         private void BindRoomAwarePlacement(ConfigFile cfg)
@@ -48,7 +48,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             ExcludeCorridors = cfg.BindSyncedEntry(
                 new ConfigDefinition(CameraPlacementSection, "Exclude Corridors"),
                 true,
-                new ConfigDescription("If true, narrow / small-footprint tiles classified as corridors by the room-aware heuristic get no CCTV camera. Default true: corridors are typically long sparse passageways that produce wall-and-skybox feeds. Synced — host's choice propagates to clients so cameras spawn on the same tiles for everyone."));
+                new ConfigDescription("When on, narrow passages that count as corridors get no camera, since their feeds mostly show walls; Corridor Max Connected Doorways, Min Horizontal Dimension and Min Floor Area decide what counts as a corridor. On by default, though Minimum Cameras can still add corridors back to reach its count. Host decides."));
 
             // Conjunction predicate per Phase 1.8 Gate 2: a tile is corridor
             // iff connected-doorway degree is at most this AND it fails the
@@ -60,17 +60,17 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             CorridorMaxConnectedDoorways = cfg.BindSyncedEntry(
                 new ConfigDefinition(CameraPlacementSection, "Corridor Max Connected Doorways"),
                 2,
-                new ConfigDescription("Upper bound on connected-doorway degree (Tile.UsedDoorways.Count) for a tile to be ELIGIBLE for corridor classification. A tile with more connected doorways than this is a junction/room and is never classified as a corridor regardless of size. Default 2 (standard pass-through). The size guards (Min Horizontal Dimension / Min Floor Area) still have to fail for the tile to actually be a corridor — degree is necessary, not sufficient. Synced."));
+                new ConfigDescription("A room with more connected doorways than this is never treated as a corridor, whatever its size. At the default of 2, only passages with one way in and one way out (or fewer) can be corridors, and only if they are also under Min Horizontal Dimension and Min Floor Area. Host decides."));
 
             MinHorizontalDimensionM = cfg.BindSyncedEntry(
                 new ConfigDefinition(CameraPlacementSection, "Min Horizontal Dimension"),
                 8.5f,
-                new ConfigDescription("Lower bound on min(Bounds.size.x, Bounds.size.z), in metres, for a tile to be classified as a room. Reference data: RAV_Tallway corridor is 6m on its narrow axis; RAV_Ballroom is 18m. Default bumped 8.0 → 8.5 after the Gate A close-out (2026-05): 8m clovers were sitting exactly on the 8.0 boundary and float-noise from placement put their measured minDim at 7.999x on some runs (→ corridor) and ≥8.0 on others (→ room), making clover classification placement-dependent. 8.5 gives 8m tiles a stable ~0.5m margin below the line; smallest real manor rooms are 11m+ so no real room is threatened. Tiles failing this AND the floor-area floor are classified as corridors. Synced."));
+                new ConfigDescription("A room at least this many metres wide on its narrower side is always a room, never a corridor. At the default of 8.5, anything narrower can still count as a room if its floor area reaches Min Floor Area. Host decides."));
 
             MinFloorAreaM2 = cfg.BindSyncedEntry(
                 new ConfigDefinition(CameraPlacementSection, "Min Floor Area"),
                 80.0f,
-                new ConfigDescription("Floor-area floor in square metres (Bounds.size.x * Bounds.size.z). OR'd with the min-horizontal-dimension test so a small-but-boxy room (low min-dim, but enough total floor to be interesting) still classifies as a room. Reference: RAV_Tallway is ~36m², RAV_Ballroom is ~324m². Synced."));
+                new ConfigDescription("A room with at least this much floor area, in square metres, is always a room, never a corridor, even when it is narrow. At the default of 80, a narrow passage smaller than 80 square metres with few doorways counts as a corridor. Host decides."));
 
             // Phase 1.8 Placement T1 — knobs that feed the future cluster→
             // select→cap pipeline (T2-T5). Bound here so a fresh deploy of
@@ -78,33 +78,33 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // defaults but no observable behavior change (nothing reads
             // these until T5 wires the pipeline into the spawner).
             JunctionMinDegree = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Junction Min Degree"),
+                new ConfigDefinition(CameraPlacementSection, "Junction Min Connected Doorways"),
                 3,
-                new ConfigDescription("In a multi-tile room-component (a connected group of ROOM tiles linked directly to each other through doorways with no corridor between), a tile is treated as a 'junction' iff its UsedDoorways.Count is >= this value. Each junction tile gets its own camera. Default 3 = first non-pass-through degree (degree-2 cells are pass-throughs even when the cell itself is a room; degree-3+ is a decision point — the natural CCTV vantage). Independent of dungeon-roll size by construction. Synced."));
+                new ConfigDescription("Only used when One Camera Per Room is off: among rooms joined directly to each other, every room with at least this many connected doorways is a junction and gets a camera. At the default of 3, rooms where paths branch get cameras and simple walk-through rooms do not. Host decides."));
 
             MinimumCameraCount = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraCountsSection, "Minimum Cameras"),
+                new ConfigDefinition(CameraPlacementSection, "Minimum Cameras"),
                 12,
                 new ConfigDescription(
-                    "Target minimum camera count for a dungeon. If normal room selection produces fewer, eligible corridor tiles are added until this count is reached or no valid tiles remain. Set to 0 to disable the minimum. If this exceeds Maximum Cameras, the maximum wins. Host authoritative and synced.",
+                    "If room selection finds fewer cameras than this, corridors are added back until the count is reached or none are left. The default is 12; 0 turns the minimum off, and Maximum Cameras wins if it is lower. Host decides.",
                     new AcceptableValueRange<int>(0, 64)));
 
             MaximumCameraCount = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraCountsSection, "Maximum Cameras"),
+                new ConfigDefinition(CameraPlacementSection, "Maximum Cameras"),
                 24,
                 new ConfigDescription(
-                    "Hard maximum camera count for a dungeon, including authored cameras. Lowest-priority procedural spaces are dropped first. Set to 0 to disable dungeon cameras. Host authoritative and synced.",
+                    "The most cameras one building can have, counting cameras built into the interior; when there are too many, Camera Budget Priority decides which to keep. The default is 24; 0 turns off cameras inside buildings. Host decides.",
                     new AcceptableValueRange<int>(0, 64)));
 
             CameraBudgetPriority = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraCountsSection, "Camera Budget Priority"),
+                new ConfigDefinition(CameraPlacementSection, "Camera Budget Priority"),
                 "MainPathThenDegreeThenArea",
-                new ConfigDescription("Sort order used to decide which proposed cameras to keep when the count exceeds Maximum Cameras. Values: 'MainPathThenDegreeThenArea' (default; main-path tiles first, then connected-degree desc, then footprint desc), 'LargestAreaFirst', 'HighestDegreeFirst'. The tile's source index in AllTiles is ALWAYS the final tiebreaker so the same proposed-pick set truncates identically on host and client. Unknown values fall back to default with a one-shot warning. Synced (so host's preference propagates)."));
+                new ConfigDescription("Decides which cameras to keep when there are more than Maximum Cameras; the kept cameras are still spread around the building. MainPathThenDegreeThenArea (the default) keeps rooms on the main route through the building first, then rooms with more doorways, then bigger rooms; LargestAreaFirst keeps the biggest rooms first; HighestDegreeFirst keeps rooms with the most doorways first. Host decides."));
 
             LinearChainCoverage = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Linear Chain Coverage"),
+                new ConfigDefinition(CameraPlacementSection, "Coverage Without Junctions"),
                 "DegreeOneEndpoints",
-                new ConfigDescription("How to place cameras in a multi-tile component that has NO junction tiles (every tile is degree <= 2 — a linear chain of rooms, uncommon). Values: 'DegreeOneEndpoints' (default; one camera at each degree-1 endpoint tile so a chain is covered at both ends — threats enter from endpoints), 'LargestTileOnly' (one camera at the largest-footprint tile, ties broken by lowest source index). A ring (no junctions AND no degree-1 endpoints) always falls back to the largest-tile rule regardless of this setting. Unknown values fall back to default with a one-shot warning. Synced."));
+                new ConfigDescription("Only used when One Camera Per Room is off: how to cover a group of joined rooms in which no room reaches Junction Min Connected Doorways. DegreeOneEndpoints (the default) puts a camera in each dead-end room at the ends of the group; LargestTileOnly puts one camera in the largest room. Host decides."));
 
             // D1 + D4 — large uncovered-room coverage. Resolves an open
             // design item from the Phase 1.8 placement workstream: a large
@@ -118,21 +118,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // original 256m² = a 16×16 tile is what the description used
             // to claim; #575 corrected the mismatch). It is NOT tuned to
             // any observed roll — the documented Gray cases clear it by a
-            // wide margin, which is the point. The
-            // config field name and key text are kept as "Leaf Camera Min
-            // Area" so existing .cfg files still bind to the same entry
-            // across the D1→D4 upgrade; description below is updated to
-            // reflect the wider semantics. C# identifier is also kept
-            // for the same compatibility reason.
+            // wide margin, which is the point. The C# name keeps the
+            // historical "Leaf" spelling; config v3 renamed the key to
+            // "Extra Room Camera Min Area" and CctvConfigSurfaceMigration
+            // moves values saved under the old "Leaf Camera Min Area" key.
             LeafCameraMinAreaM2 = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "Leaf Camera Min Area"),
+                new ConfigDefinition(CameraPlacementSection, "Extra Room Camera Min Area"),
                 80.0f,
-                new ConfigDescription("In a multi-tile room-component that already has junction tiles, every NON-JUNCTION room (subgraph degree <= 2 in the component — i.e. a degree-1 leaf OR a degree-2 through-room; subgraph degree, NOT raw doorway count, so corridor-side doorways do not count) whose floor area in m² is at least this value receives its own camera IN ADDITION to the component's junction cameras. Applies ONLY inside the junction branch — the linear-chain branch already covers degree-1 endpoints, the ring branch has no leaves, the single-tile branch has no leaves. Set to 0 to disable the rule entirely (no-op; output is byte-identical to pre-D1 behaviour). Default 80.0 m², matching the Min Floor Area room floor. NAME NOTE: the entry is still called 'Leaf Camera Min Area' for .cfg compatibility with installs that already have the D1-era line; the rule's behaviour is wider than just leaves as of D4. NOTE: CHANGING THE CODE DEFAULT DOES NOT MIGRATE STALE CONFIG FILES — if you installed an earlier build the entry is already pinned in LethalCCTV.cfg at its prior value; delete the line (or the whole file) and let it regenerate to pick up the current default. Synced (host's choice propagates)."));
+                new ConfigDescription("Only used when One Camera Per Room is off: in a group of joined rooms that has junctions, any other room with at least this much floor area, in square metres, also gets its own camera. At the default of 80, large side rooms are covered; 0 turns this off. Host decides."));
 
             OneCameraPerTile = cfg.BindSyncedEntry(
-                new ConfigDefinition(CameraPlacementSection, "One Camera Per Tile"),
+                new ConfigDefinition(CameraPlacementSection, "One Camera Per Room"),
                 true,
-                new ConfigDescription("When true (default), the room-aware selector places one camera in every non-excluded room tile rather than only at junction / large-leaf tiles. The strict junction-only selection yielded 3-4 cameras on typical Facility rolls, which the operator reported as too low for a multi-room role. The surface-mount pass in the spawner still filters tiles that can't physically host a camera, so this rule still respects mount-feasibility. Set to false to revert to the old junction-only selection. Synced."));
+                new ConfigDescription("When on, every room that is not excluded gets a camera, wherever one can be mounted. On by default; turn off to place cameras only where paths branch and in large rooms, as set by Junction Min Connected Doorways, Coverage Without Junctions and Extra Room Camera Min Area. Host decides."));
 
             // The Phase 1.9 mount-mode threshold and wall-mount height, and
             // the T1 "Dry Run Camera Placement" STOP flag, left the config

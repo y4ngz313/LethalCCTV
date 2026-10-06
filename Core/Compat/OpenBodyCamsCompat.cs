@@ -71,6 +71,7 @@ namespace Y4NGZCompany.Core.Compat
         private static Material _capturedMonitorMaterial;
         private static bool _capturedMonitorBinding;
         private static bool _suppressionLogged;
+        private static bool _restoreSkippedForOwnedSlotLogged;
         private static bool _storeSuppressionLogged;
         private static bool _focusLogged;
         private static bool _missingLogged;
@@ -573,11 +574,24 @@ namespace Y4NGZCompany.Core.Compat
                 Material restoreMaterial = disabledMaterial ?? _capturedMonitorMaterial;
                 Material currentMaterial = TryReadRendererMaterial(targetRenderer, targetIndex);
                 bool currentIsBodyCam = MaterialLooksLikeBodyCam(currentMaterial);
+
+                // #776 (public y4ngz313/LethalCCTV#1). This restore exists to undo a bodycam
+                // paint OBC already made. It used to run whenever Ship Systems was not
+                // driving the power monitor, i.e. on every suppressed UpdateScreenMaterial
+                // call, and it wrote OBC's pre-OBC material into whatever slot OBC was bound
+                // to. Under GeneralImprovements OBC's default monitor index resolves to the
+                // last GI screen, the big right one, which is exactly where CCTV's automatic
+                // radar lives, so each restore blanked the radar back to the exterior camera
+                // until the next reassert: the "flickering map". Restore only what OBC
+                // actually painted, and never into a slot a CCTV binding owns.
                 if (targetRenderer != null
                     && restoreMaterial != null
-                    && (!shipSystemsOwnsMonitor || currentIsBodyCam))
+                    && currentIsBodyCam)
                 {
-                    TrySetRendererMaterial(targetRenderer, targetIndex, restoreMaterial);
+                    if (CCTVVanillaMonitorDisplay.TryDescribeOwnedScreenSlot(targetRenderer, targetIndex, out string ownerLabel))
+                        LogRestoreSkippedForOwnedSlotOnce(targetRenderer, targetIndex, ownerLabel);
+                    else
+                        TrySetRendererMaterial(targetRenderer, targetIndex, restoreMaterial);
                 }
 
                 // Keep OBC's renderer reference intact until its OverlayManager.Start has
@@ -1209,6 +1223,17 @@ namespace Y4NGZCompany.Core.Compat
                 && texture.name.IndexOf("BodyCam", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private static void LogRestoreSkippedForOwnedSlotOnce(Renderer renderer, int materialIndex, string ownerLabel)
+        {
+            if (_restoreSkippedForOwnedSlotLogged)
+                return;
+
+            _restoreSkippedForOwnedSlotLogged = true;
+            string path = renderer != null ? GetTransformPath(renderer.transform) : "<null>";
+            SurveillanceBootstrap.Log?.LogInfo(
+                $"[LethalCCTV] OpenBodyCams restore write skipped: {path} slot {materialIndex} is owned by the CCTV {ownerLabel} binding (#776).");
+        }
+
         private static void TrySetRendererMaterial(Renderer renderer, int materialIndex, Material material)
         {
             if (renderer == null || material == null || materialIndex < 0) return;
@@ -1358,13 +1383,34 @@ namespace Y4NGZCompany.Core.Compat
         }
 
         private static ManualCameraRenderer _headMountedRenderer;
+        private static UnityEngine.UI.RawImage _cachedHeadMountedCamUI;
 
-        // #303 — vanilla v70's HeadMountedCamera is driven by its own
+        // #1139 — the vanilla HeadMountedCamera renders ~3 ms/frame even when
+        // nothing consumes its output. A visible consumer is either the vanilla
+        // right-monitor headMountedCamUI RawImage or OBC's active bodycam focus slot.
+        // Checks are cheap: cached component references and static property reads,
+        // with no scene searches per call.
+        internal static bool HasVisibleConsumer()
+        {
+            if (IsLoaded && MonitorFocus.IsFocused && MonitorFocus.IsBodycamFeedActive)
+                return true;
+
+            if (_cachedHeadMountedCamUI == null)
+            {
+                StartOfRound sor = StartOfRound.Instance;
+                if (sor == null || sor.mapScreen == null) return false;
+                _cachedHeadMountedCamUI = sor.mapScreen.headMountedCamUI;
+                if (_cachedHeadMountedCamUI == null) return false;
+            }
+            return _cachedHeadMountedCamUI.isActiveAndEnabled;
+        }
+
+        // #303 / #1139 — vanilla v70's HeadMountedCamera is driven by its own
         // ManualCameraRenderer manual-render path, so cam.enabled sweeps never see
         // it (the 2026-08-05 follow-up session still showed 67-166 renders per
-        // ~700-frame window after the enabled-state guard landed). Until the CCTV
-        // Terminal is purchased the OBC integration must be inert and the rig has
-        // no visible consumer; refuse the render at the source.
+        // ~700-frame window after the enabled-state guard landed). The postfix
+        // now refuses the render whenever HasVisibleConsumer() is false, not
+        // merely when the terminal is unpurchased.
         private static bool IsHeadMountedRenderer(ManualCameraRenderer renderer)
         {
             if (_headMountedRenderer != null)
@@ -1386,7 +1432,7 @@ namespace Y4NGZCompany.Core.Compat
             if (!__result || __instance == null)
                 return;
 
-            if (IsHeadMountedRenderer(__instance) && !ShouldShowFocusSlot())
+            if (IsHeadMountedRenderer(__instance) && !HasVisibleConsumer())
             {
                 __result = false;
                 return;

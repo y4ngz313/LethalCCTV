@@ -14,6 +14,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
         public int color;
         public bool eraseRenderer;
+        internal bool SquadHighlighted;
 
         public Material[] SharedMaterials
         {
@@ -36,12 +37,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
         private void OnEnable()
         {
-            OutlineEffect.Instance?.AddOutline(this);
+            OutlineEffect.RegisterOutline(this);
         }
 
         private void OnDisable()
         {
-            OutlineEffect.Instance?.RemoveOutline(this);
+            OutlineEffect.UnregisterOutline(this);
         }
     }
 }

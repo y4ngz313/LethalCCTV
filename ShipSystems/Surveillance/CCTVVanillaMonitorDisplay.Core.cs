@@ -21,8 +21,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const int FallbackLowerLeftMaterialIndex = 1;
         private const int UiRenderLayer = 31;
         private const int MonitorWidth = 768;
-        private const int MonitorHeight = 432;
-        private const int MonitorRenderScale = 1;
+        // Match the 4:3 feed and vanilla monitor face; the old 16:9 canvas
+        // compressed the typography horizontally when mapped onto this screen.
+        private const int MonitorHeight = 576;
+        private const int MonitorRenderScale = 2;
         private const int MonitorRenderWidth = MonitorWidth * MonitorRenderScale;
         private const int MonitorRenderHeight = MonitorHeight * MonitorRenderScale;
         private const float RadarImageRotationDegrees = 0f;
@@ -61,10 +63,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // as the DVR's own on-screen display sitting over the picture, which is what
         // a real security monitor looks like.
         private static TextMeshProUGUI _leftClockLabel;
-        private static Image _leftRecDot;
         private static TextMeshProUGUI _leftRecLabel;
         private static TextMeshProUGUI _leftStatusLabel;
-        private static Image[] _leftSignalBars;
         private static GameObject _leftSignalLostRoot;
         private static RawImage _leftSignalLostStatic;
         private static TextMeshProUGUI _leftSignalLostLabel;
@@ -73,14 +73,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static string _lastLeftClockText;
         private static string _lastLeftStatusText;
         private static string _lastLeftSignalLostText;
-        private static int _lastLeftSignalBars = -1;
         private static bool _lastLeftRecOn;
         private static bool _lastLeftSignalLost;
         // A 1 Hz cycle, lit for the first 55% of it. Sampled from Time.unscaledTime,
         // so it keeps the same phase across a pause and never accumulates drift.
         private const float RecBlinkPeriodSeconds = 1.0f;
         private const float RecBlinkOnFraction = 0.55f;
-        private const int SignalBarCount = 5;
 
         // Bind-once screen takeovers (see ScreenBinding). Both visible lower ship
         // monitors are material slots on Cube.001 in the current vanilla wall:
@@ -101,14 +99,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static bool _cctvModeActive;
         private static float _nextProbeAt;
-        // Per-frame Tick reduces to two time comparisons; everything heavy runs on
+        // Per-frame Tick reduces to cheap comparisons; everything heavy runs on
         // these cadences. Maintenance = scene lookups / binding / suppression;
         // compositor = the two rig camera renders + blit (a CCTV-monitor refresh
-        // rate, intentionally well below the game framerate).
+        // rate, intentionally well below the game framerate), paced and bounded by
+        // CctvRenderScheduler (#1219 G4).
         private const float BindMaintenanceIntervalSeconds = 1.0f;
         private const float DriverRediscoveryIntervalSeconds = 30f;
-        private const float FocusedCompositorPassiveIntervalSeconds = 1f / 10f;
-        private const float FocusedCompositorInteractiveIntervalSeconds = 1f / 18f;
+        private const float FocusedCompositorPassiveIntervalSeconds = 1f / 24f;
+        private const float FocusedCompositorInteractiveIntervalSeconds = 1f / 24f;
         private const float RightFocusedCompositorIntervalSeconds = 0.25f;
         private const float RightFocusedIdleCompositorIntervalSeconds = 0.5f;
         private const float VisibleAmbientCompositorIntervalSeconds = 0.5f;
@@ -121,8 +120,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const float FullSuppressionIntervalSeconds = 0.20f;
         private const float FastMaterialVerifyIntervalSeconds = 0.20f;
         private static float _nextBindMaintenanceAt;
-        private static float _nextCompositorRenderAt;
-        private static float _nextRightCompositorRenderAt;
+        // Tick's view of the frame that last requested a compositor render; the render
+        // callbacks run later in the frame (CctvRenderScheduler.Pump) and read these.
+        private static bool _scheduledMonitorVisible;
+        private static bool _scheduledAllowRadarWork;
         private static float _nextReassertAt;
         private static float _nextFullSuppressionAt;
         private static float _nextFastMaterialVerifyAt;
@@ -136,7 +137,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static float _nextBindMaintenanceSuppressionReportAt;
         private static bool _bindMaintenanceGateLogged;
         private static bool _bindMaintenanceResumeLogged;
-        // Proof the observability gate in ShouldRenderCompositor actually fires. A fix in
+        // Proof the observability gate in ShouldRequestCompositor actually fires. A fix in
         // this area already shipped once as a silent no-op that looked correct in review,
         // so this one reports itself: a nonzero count is the repaints that used to run
         // where nobody could see them.

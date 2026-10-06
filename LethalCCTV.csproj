@@ -1,11 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);Y4NGZ_LOCAL_JAMB_CLIPPER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Keep the visual helper local so older Core packages do not block plugin startup. -->
+    <Compile Include="../Y4NGZCore/Facility/Shared/SlidingLeafJambClipper.cs" Link="Compat/SlidingLeafJambClipper.cs" />
+  </ItemGroup>
 
   <!-- Shared settings live in ..\Directory.Build.props. -->
   <PropertyGroup>
     <AssemblyName>LethalCCTV</AssemblyName>
     <RootNamespace>LethalCCTV</RootNamespace>
     <Description>Y4NGZ surveillance and CCTV systems</Description>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <!-- OutlineEffect's HDRP custom pass overrides CustomPass.Execute, which the publicizer
          widens to public; the source guards the modifier on this symbol. Same NoWarn as
          Y4NGZCompany for the publicized-type-vs-reference-assembly CS0436 duplicate. -->

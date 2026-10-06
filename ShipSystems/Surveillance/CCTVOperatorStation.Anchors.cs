@@ -14,6 +14,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 {
     internal static partial class CCTVOperatorStation
     {
+        internal static Quaternion LeverSteeringDelta => _joystickSessionOwned && _joystickTiltPivot != null
+            ? _joystickTiltPivot.rotation * Quaternion.Inverse(GetJoystickBaseWorldRotation())
+            : Quaternion.identity;
+        internal static Vector3 LeverGripUp => LeverSteeringDelta * Vector3.up;
+
         internal static bool TryResolveLeverGripPoint(out Vector3 point, out string source)
         {
             EnsureBrakeLeverControlRig();
@@ -230,7 +235,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static float _nextRadarScreenCenterResolveAt;
 
         // Design intent for the radar glance is RadarFocusLocalEuler minus
-        // FocusLocalEuler, i.e. 28 degrees of yaw. This bound leaves room for
+        // FocusLocalEuler, about 47 degrees of yaw. This bound leaves room for
         // the real screen geometry while still catching a resolved center that
         // is not the lower-right monitor at all.
         private const float RadarAimMaxAngleFromFocusDeg = 60f;
@@ -656,7 +661,25 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             return bounds.size.sqrMagnitude > 1e-6f;
         }
 
+        // #716 C5. EnsureFocusAnchorAimed runs every 5s and each pass re-ran the scene-wide
+        // GameObject.Find path walks below plus a FindObjectOfType<ShipTeleporter>, measured
+        // at 3.31ms on a zero-camera pass. All four targets are static ship geometry, so the
+        // resolved references are cached and only re-derived when the cache goes Unity-null
+        // (scene reload / ship rebuild).
+        private static MeshRenderer _cachedLowerLeftMonitorRenderer;
+        private static MeshRenderer _cachedLowerRightMonitorRenderer;
+        private static ShipTeleporter _cachedShipTeleporter;
+        private static Transform _cachedShipTransform;
+
         private static MeshRenderer TryResolveLowerLeftMonitorRenderer()
+        {
+            if (_cachedLowerLeftMonitorRenderer != null)
+                return _cachedLowerLeftMonitorRenderer;
+            _cachedLowerLeftMonitorRenderer = ResolveLowerLeftMonitorRendererUncached();
+            return _cachedLowerLeftMonitorRenderer;
+        }
+
+        private static MeshRenderer ResolveLowerLeftMonitorRendererUncached()
         {
             try
             {
@@ -677,6 +700,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         }
 
         private static MeshRenderer TryResolveLowerRightMonitorRenderer()
+        {
+            if (_cachedLowerRightMonitorRenderer != null)
+                return _cachedLowerRightMonitorRenderer;
+            _cachedLowerRightMonitorRenderer = ResolveLowerRightMonitorRendererUncached();
+            return _cachedLowerRightMonitorRenderer;
+        }
+
+        private static MeshRenderer ResolveLowerRightMonitorRendererUncached()
         {
             GameObject exact = GameObject.Find(LowerRightMonitorPath);
             MeshRenderer exactRenderer = exact != null ? exact.GetComponent<MeshRenderer>() : null;
@@ -908,7 +939,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             Vector3 interiorReference = ship.position;
             try
             {
-                ShipTeleporter teleporter = UnityEngine.Object.FindObjectOfType<ShipTeleporter>();
+                if (_cachedShipTeleporter == null)
+                    _cachedShipTeleporter = UnityEngine.Object.FindObjectOfType<ShipTeleporter>();
+                ShipTeleporter teleporter = _cachedShipTeleporter;
                 if (teleporter != null)
                     interiorReference = teleporter.transform.position;
             }
@@ -930,8 +963,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (StartOfRound.Instance != null && StartOfRound.Instance.elevatorTransform != null)
                 return StartOfRound.Instance.elevatorTransform;
 
+            if (_cachedShipTransform != null)
+                return _cachedShipTransform;
+
             GameObject hangar = GameObject.Find("Environment/HangarShip");
-            return hangar != null ? hangar.transform : null;
+            _cachedShipTransform = hangar != null ? hangar.transform : null;
+            return _cachedShipTransform;
         }
     }
 }

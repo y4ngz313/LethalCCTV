@@ -215,12 +215,14 @@ namespace Y4NGZCompany.Facility.Security
             return GetStashCodeDebugReport();
         }
 
+        /// <summary>#716 G4. Delegates to the round-lifecycle reset so an external caller gets
+        /// the same eight-system reset the vanilla round boundaries run. It previously reset
+        /// only support state, the security director, the camera registry and the shutdown
+        /// sync, leaving the alarm system, spawned alarm fixtures, mainframe protocol state
+        /// and interior support state holding the previous round.</summary>
         public static void ResetRound()
         {
-            CctvSupportState.ResetRunState();
-            CctvSecurityDirector.ResetRound();
-            CctvSecurityCameraRegistry.ResetRound();
-            CctvCameraShutdownSync.ResetRound();
+            CctvRoundLifecyclePatches.ResetRound();
         }
     }
 }

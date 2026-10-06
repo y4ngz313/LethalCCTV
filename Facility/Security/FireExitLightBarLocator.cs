@@ -53,9 +53,6 @@ namespace Y4NGZCompany.Facility.Security
             _transientRescansUsed = 0;
         }
 
-        internal static bool HasCachedSceneTemplate =>
-            _cachedTemplate != null && !_cachedTemplateIsProcedural;
-
         internal static bool HasAnyInsideTeleport(out int totalCount, out int insideCount)
         {
             EntranceTeleport[] teleports = Object.FindObjectsOfType<EntranceTeleport>(includeInactive: true);
@@ -132,15 +129,15 @@ namespace Y4NGZCompany.Facility.Security
         // undersized the bar when only the first mesh was measured, which
         // sank seated bars into doorframes. Fails on near-cubic meshes
         // where the axis ranking would be arbitrary.
-        internal static bool TryComputeBarFrame(out Vector3 thinAxisLocal, out Vector3 upAxisLocal, out Vector3 halfSize)
+        internal static bool TryComputeBarFrame(out Vector3 thinAxisLocal, out Vector3 upAxisLocal, out Vector3 halfSize, out Vector3 visualCenterLocal)
         {
             thinAxisLocal = Vector3.forward;
             upAxisLocal = Vector3.up;
             halfSize = new Vector3(0.5f, 0.12f, 0.08f);
+            visualCenterLocal = default;
 
             GameObject template = TryGetTemplate();
             if (template == null) return false;
-
             MeshFilter[] filters = template.GetComponentsInChildren<MeshFilter>(includeInactive: true);
             Bounds combined = default;
             bool hasBounds = false;
@@ -195,6 +192,7 @@ namespace Y4NGZCompany.Facility.Security
             thinAxisLocal = AxisVector(thinAxis);
             upAxisLocal = AxisVector(midAxis);
             halfSize = new Vector3(extents[longAxis], extents[midAxis], extents[thinAxis]);
+            visualCenterLocal = combined.center;
             return true;
         }
 

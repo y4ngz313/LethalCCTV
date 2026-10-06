@@ -11,7 +11,7 @@ namespace LethalCCTV
     /// reused so existing configs and dependants keep resolving to this plugin.
     /// </summary>
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    [BepInDependency(CorePlugin.PluginGuid, BepInDependency.DependencyFlags.HardDependency)]
+    [BepInDependency(CorePlugin.PluginGuid, "1.0.10")]
     [BepInDependency("com.y4ngz.interactions", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("evaisa.lethallib", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("LethalNetworkAPI", BepInDependency.DependencyFlags.HardDependency)]
@@ -43,18 +43,22 @@ namespace LethalCCTV
     // (objective markers, HUD host, Bundy world noise) see its types already registered.
     // Y4NGZCompany must never declare the mirror dependency - that would invert load order.
     [BepInDependency("com.y4ngz.company", BepInDependency.DependencyFlags.SoftDependency)]
+    // Soft, same shape (#660): the HUD host / visibility substrate lives in the Y4NGZUI
+    // plugin now, and GameplayHudHostBridge probes it first. When it is installed it must
+    // chainload before this plugin so the bridge's memoized probe sees it registered.
+    [BepInDependency(Y4NGZCore.Lifecycle.ModuleHarmonyIds.Ui, BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class LethalCCTVPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.y4ngz.company.lethalcctv";
         public const string PluginName = "LethalCCTV";
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.2.0";
 
         /// <summary>
         /// This build's wire-protocol revision for the module handshake (#613 task 2.2). Covers
-        /// <c>CctvCameraShutdownSync</c>'s two named messages and <c>ShipTurretController</c>'s
-        /// two, not <see cref="PluginVersion"/>. Bump only on a payload or authority change.
+        /// camera shutdown, ship turret requests/results, and coded facility-device commands.
+        /// Bump on a payload or authority change independently of <see cref="PluginVersion"/>.
         /// </summary>
-        public const int CctvProtocolRevision = 1;
+        public const int CctvProtocolRevision = 3;
 
         public static LethalCCTVPlugin Instance { get; private set; }
 
@@ -85,8 +89,7 @@ namespace LethalCCTV
             // #613 task 2.2 - the cross-plugin module handshake. CCTV joins for the same reason
             // the other two do: the handshake compares the module SET of the whole install, and a
             // plugin that never announces cannot be told apart from one that is not installed.
-            // The revision covers this assembly's named messages (the camera-shutdown snapshot and
-            // break request, and the ship turret's shot request/result), not PluginVersion.
+            // Covers the module's network payloads and host authority, including coded devices.
             Y4NGZCore.Modules.Net.ModuleHandshakeService.Publish(
                 Y4NGZCore.Lifecycle.ModuleIds.Cctv,
                 CctvProtocolRevision,

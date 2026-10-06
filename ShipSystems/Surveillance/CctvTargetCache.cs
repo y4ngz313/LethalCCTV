@@ -4,7 +4,10 @@ using System.Reflection;
 using GameNetcodeStuff;
 using Y4NGZCompany.Core.Compat;
 using UnityEngine;
+using Y4NGZCore.Modules.Objectives;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Facility.Mainframe;
+using Y4NGZCompany.Facility.Stash;
 
 namespace Y4NGZCompany.ShipSystems.Surveillance
 {
@@ -20,8 +23,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const int MaxRootsPerRefreshSlice = 32;
         // Even one-collector-per-pass left CollectItemTargets spiking 55-94ms
         // (#279): it paid a scene-wide FindObjectsOfType<GrabbableObject> AND the
-        // per-item classification of every result in the same pass. The scan now
-        // gets a pass to itself and classification runs this many items per pass.
+        // per-item classification of every result in the same pass. The scan is now
+        // a copy of CctvTargetRegistry.Items (#1219 G4) and classification still runs
+        // this many items per pass.
         private const int MaxItemsPerRefreshSlice = 64;
 
         private static List<RendererTarget> _rendererTargets = new List<RendererTarget>(320);
@@ -37,7 +41,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static readonly List<Renderer> _scratchRenderers = new List<Renderer>(16);
         private static readonly List<ObjectiveMarkerInfo> _objectiveMarkers = new List<ObjectiveMarkerInfo>(32);
         private static readonly List<PendingRootWork> _pendingRoots = new List<PendingRootWork>(256);
-        private static GrabbableObject[] _pendingItems;
+        private static readonly List<GrabbableObject> _pendingItems = new List<GrabbableObject>(256);
+        private static bool _pendingItemSnapshotTaken;
         private static int _pendingItemIndex;
         private static int _pendingRootIndex;
         private static int _pendingCollectorIndex;
@@ -52,6 +57,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static float _nextRefreshAt;
         private static float _nextStalePruneAt;
         private static int _nextSyntheticSourceId = -1;
+        private static readonly Dictionary<string, int> _stableIds = new Dictionary<string, int>();
 
         internal enum TargetKind
         {
@@ -59,6 +65,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             Hostile,
             Player,
             Objective,
+            Device,
         }
 
         internal readonly struct RendererTarget
@@ -78,17 +85,25 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             internal readonly Bounds Bounds;
             internal readonly Transform Root;
             internal readonly TargetKind Kind;
-            internal readonly int SourceId;
+            internal readonly long SourceId;
             internal readonly string Label;
             internal readonly bool TracksRoot;
             private readonly Vector3 _rootPositionAtCapture;
+            private readonly Renderer[] _renderers;
+            internal readonly bool IsArea;
+            internal readonly float AreaRadius;
 
-            internal ScreenTarget(Bounds bounds, Transform root, TargetKind kind, int sourceId, string label)
+            internal ScreenTarget(Bounds bounds, Transform root, TargetKind kind, int sourceId, string label, bool isArea = false, float areaRadius = 1f)
             {
+                IsArea = isArea;
+                AreaRadius = areaRadius;
+                _renderers = root != null && !isArea ? Array.FindAll(root.GetComponentsInChildren<Renderer>(true), IsEligibleRenderer) : null;
                 Bounds = bounds;
                 Root = root;
                 Kind = kind;
-                SourceId = sourceId;
+                // Separate object IDs from generated location IDs, even when Unity
+                // allocates negative instance IDs.
+                SourceId = ((long)sourceId << 1) | (root == null || isArea ? 1L : 0L);
                 Label = label;
                 TracksRoot = root != null;
                 _rootPositionAtCapture = root != null ? root.position : Vector3.zero;
@@ -100,6 +115,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     return Bounds;
 
                 Bounds current = Bounds;
+                bool found = false;
+                if (_renderers != null)
+                    foreach (Renderer renderer in _renderers)
+                    {
+                        if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy) continue;
+                        if (!found) current = renderer.bounds;
+                        else current.Encapsulate(renderer.bounds);
+                        found = true;
+                    }
+                if (found) return current;
                 current.center += Root.position - _rootPositionAtCapture;
                 return current;
             }
@@ -155,14 +180,18 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             internal readonly float Radius;
             internal readonly bool IsComplete;
             internal readonly Component Target;
+            internal readonly string Key;
+            internal readonly bool IsArea;
 
-            internal ObjectiveMarkerInfo(string label, Vector3 position, float radius, bool isComplete, Component target)
+            internal ObjectiveMarkerInfo(string label, Vector3 position, float radius, bool isComplete, Component target, string key, bool isArea)
             {
                 Label = string.IsNullOrWhiteSpace(label) ? "OBJECTIVE" : label;
                 Position = position;
-                Radius = Mathf.Clamp(radius, 0.35f, 5f);
+                Radius = Mathf.Clamp(radius, 0.35f, isArea ? 30f : 5f);
                 IsComplete = isComplete;
                 Target = target;
+                Key = key;
+                IsArea = isArea;
             }
         }
 
@@ -211,6 +240,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _nextRefreshAt = 0f;
             _nextStalePruneAt = 0f;
             _nextSyntheticSourceId = -1;
+            _stableIds.Clear();
         }
 
         // Collector order matters: CollectObjectiveMarkers fills _objectiveMarkers,
@@ -222,6 +252,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             CollectObjectiveMarkers,
             CollectSystemTargets,
             CollectEntranceTargets,
+            CollectCodedDevices,
             CollectContractObjectiveTargets,
             CollectPlayerTargets,
             CollectHostileTargets,
@@ -240,7 +271,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _pendingCollectorIndex = 0;
             ClearPendingItemScan();
             _objectiveMarkers.Clear();
-            _nextSyntheticSourceId = -1;
             _slicedRefreshActive = true;
         }
 
@@ -250,11 +280,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
 
             // Running every collector in one pass cost 73-78ms (the scene-wide
-            // FindObjectsOfType scans dominate), so each pass runs a single
-            // collector; root renderer walks start only after the last one.
+            // FindObjectsOfType scans dominated before CctvTargetRegistry replaced them),
+            // so each pass runs a single collector; root renderer walks start only after
+            // the last one.
             if (_pendingCollectorIndex < SlicedCollectors.Length)
             {
-                long collectStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
                 // A throwing collector leaves this true so it cannot wedge the rebuild.
                 bool collectorComplete = true;
                 _writeToStaging = true;
@@ -271,13 +301,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                         _pendingCollectorIndex++;
                 }
 
-                if (MonitorFocus.IsFocused)
-                {
-                    FocusPerfProbe.RecordStep(
-                        "CctvTargetCache.RefreshCollect",
-                        System.Diagnostics.Stopwatch.GetTimestamp() - collectStartedAt);
-                }
-
                 if (_pendingCollectorIndex >= SlicedCollectors.Length && !_loggedSlicedRefresh)
                 {
                     _loggedSlicedRefresh = true;
@@ -289,7 +312,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
             }
 
-            long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             _writeToStaging = true;
             try
             {
@@ -314,13 +336,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (_pendingRootIndex >= _pendingRoots.Count)
                 CommitSlicedRefresh();
-
-            if (MonitorFocus.IsFocused)
-            {
-                FocusPerfProbe.RecordStep(
-                    "CctvTargetCache.RefreshSlice",
-                    System.Diagnostics.Stopwatch.GetTimestamp() - startedAt);
-            }
         }
 
         private static void CommitSlicedRefresh()
@@ -359,11 +374,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _enqueueRootTargets = false;
         }
 
-        // The scan snapshot keeps managed references to every grabbable in the
-        // level, so it is released as soon as the rebuild that took it is done.
+        // The snapshot keeps managed references to every grabbable in the level, so it
+        // is released as soon as the rebuild that took it is done.
         private static void ClearPendingItemScan()
         {
-            _pendingItems = null;
+            _pendingItems.Clear();
+            _pendingItemSnapshotTaken = false;
             _pendingItemIndex = 0;
         }
 
@@ -384,8 +400,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     tryParentForRenderers: true);
             }
 
-            TryAddTypeTargets("MainframeSupport", TargetKind.Objective);
-            TryAddTypeTargets("CompanyStashController", TargetKind.Objective, "COMPANY STASH");
+            MainframeSupport mainframe = MainframeSupport.Active;
+            if (mainframe != null && mainframe.IsPhysicalMainframe)
+                AddRootTarget(mainframe.gameObject, TargetKind.Objective, mainframe.transform.position, 1.0f,
+                    "Mainframe", addGroundWhenNoRenderer: true);
+            AddStashTargets();
             TryAddApparatusTargets();
             TryAddRadarBoosterTargets();
             return true;
@@ -393,11 +412,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static bool CollectEntranceTargets()
         {
-            EntranceTeleport[] entrances = UnityEngine.Object.FindObjectsOfType<EntranceTeleport>(includeInactive: false);
-            for (int i = 0; i < entrances.Length; i++)
+            CctvTargetRegistry.Entrances.Prune();
+            for (int i = 0; i < CctvTargetRegistry.Entrances.Count; i++)
             {
-                EntranceTeleport entrance = entrances[i];
-                if (entrance == null) continue;
+                EntranceTeleport entrance = CctvTargetRegistry.Entrances[i];
+                if (!entrance.gameObject.activeInHierarchy) continue;
                 if (entrance.entranceId == 0 && !ShowMainEntranceTrackingBox())
                     continue;
                 if (entrance.entranceId != 0 && !ShowFireExitTrackingBoxes())
@@ -415,6 +434,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             return true;
         }
 
+        private static bool CollectCodedDevices()
+        {
+            CctvTargetRegistry.Devices.Prune();
+            for (int i = 0; i < CctvTargetRegistry.Devices.Count; i++)
+            {
+                TerminalAccessibleObject device = CctvTargetRegistry.Devices[i];
+                if (!device.gameObject.activeInHierarchy) continue;
+                if (CctvDeviceCommands.TryDescribe(device, out string label))
+                    AddRootTarget(device.gameObject, TargetKind.Device, device.transform.position, 0.6f, label);
+            }
+            return true;
+        }
+
         private static bool CollectContractObjectiveTargets()
         {
             for (int i = 0; i < _objectiveMarkers.Count; i++)
@@ -424,7 +456,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 if (!ShowApparatusTrackingBox() && IsApparatusMarker(marker))
                     continue;
 
-                if (marker.Target != null)
+                if (marker.IsArea)
+                {
+                    AddBoundsTarget(new Bounds(marker.Position, Vector3.one * 0.15f), TargetKind.Objective,
+                        marker.Label, marker.Key, true, marker.Radius, marker.Target != null ? marker.Target.transform : null);
+                }
+                else if (marker.Target != null)
                 {
                     AddRootTarget(
                         marker.Target.gameObject,
@@ -433,14 +470,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                         marker.Radius,
                         marker.Label,
                         addGroundWhenNoRenderer: true,
-                        tryParentForRenderers: true);
+                        tryParentForRenderers: false);
                 }
                 else
                 {
                     AddBoundsTarget(
                         new Bounds(marker.Position, Vector3.one * Mathf.Max(0.7f, marker.Radius * 2f)),
                         TargetKind.Objective,
-                        marker.Label);
+                        marker.Label, marker.Key);
                     AddGroundTarget(marker.Position, marker.Radius, TargetKind.Objective);
                 }
             }
@@ -450,9 +487,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static bool CollectPlayerTargets()
         {
+            // No round, no players: allPlayerScripts is the authoritative roster whenever
+            // StartOfRound exists, so there is no scene-scan fallback (#1219 G4).
             PlayerControllerB[] players = StartOfRound.Instance?.allPlayerScripts;
-            if (players == null || players.Length == 0)
-                players = UnityEngine.Object.FindObjectsOfType<PlayerControllerB>(includeInactive: false);
+            if (players == null)
+                return true;
 
             for (int i = 0; i < players.Length; i++)
             {
@@ -477,9 +516,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return true;
             }
 
-            EnemyAI[] enemies = UnityEngine.Object.FindObjectsOfType<EnemyAI>(includeInactive: false);
-            for (int i = 0; i < enemies.Length; i++)
-                AddHostileTarget(enemies[i]);
+            CctvTargetRegistry.Enemies.Prune();
+            for (int i = 0; i < CctvTargetRegistry.Enemies.Count; i++)
+                AddHostileTarget(CctvTargetRegistry.Enemies[i]);
             return true;
         }
 
@@ -495,7 +534,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             AddRootTarget(enemy.gameObject, kind, enemy.transform.position + Vector3.up, 1.0f, label);
         }
 
-        // Sliced in two stages: one pass takes the scene-wide snapshot and stops,
+        // Sliced in two stages: one pass copies the registry snapshot and stops,
         // then later passes classify MaxItemsPerRefreshSlice entries each. The
         // snapshot ages by at most (count / MaxItemsPerRefreshSlice) passes, which
         // is the same order of staleness the one-collector-per-pass rebuild and the
@@ -503,15 +542,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         // the same set at commit, and the 1s stale prune still drops dead targets.
         private static bool CollectItemTargets()
         {
-            if (_pendingItems == null)
+            if (!_pendingItemSnapshotTaken)
             {
-                _pendingItems = UnityEngine.Object.FindObjectsOfType<GrabbableObject>(includeInactive: false);
+                _pendingItemSnapshotTaken = true;
+                CctvTargetRegistry.Items.CopyActiveTo(_pendingItems);
                 _pendingItemIndex = 0;
-                if (_pendingItems.Length > 0)
+                if (_pendingItems.Count > 0)
                     return false;
             }
 
-            int end = Mathf.Min(_pendingItemIndex + MaxItemsPerRefreshSlice, _pendingItems.Length);
+            int end = Mathf.Min(_pendingItemIndex + MaxItemsPerRefreshSlice, _pendingItems.Count);
             for (; _pendingItemIndex < end; _pendingItemIndex++)
             {
                 GrabbableObject item = _pendingItems[_pendingItemIndex];
@@ -533,42 +573,31 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 string label = item.itemProperties != null && !string.IsNullOrWhiteSpace(item.itemProperties.itemName)
                     ? item.itemProperties.itemName
                     : item.gameObject.name;
-                AddRootTarget(item.gameObject, kind, item.transform.position, 0.45f, objective ? "RADAR" : label);
+                AddRootTarget(item.gameObject, kind, item.transform.position, 0.45f, isApparatus ? "APPARATUS" : label);
             }
 
-            if (_pendingItemIndex < _pendingItems.Length)
+            if (_pendingItemIndex < _pendingItems.Count)
                 return false;
 
             ClearPendingItemScan();
             return true;
         }
 
-        private static void TryAddTypeTargets(string typeName, TargetKind kind, string displayLabel = null)
+        private static void AddStashTargets()
         {
-            Type type = ResolveLguContractHudType(typeName);
-            if (type == null) return;
-
-            UnityEngine.Object[] instances = UnityEngine.Object.FindObjectsOfType(type);
-            for (int i = 0; i < instances.Length; i++)
+            CctvTargetRegistry.Stashes.Prune();
+            for (int i = 0; i < CctvTargetRegistry.Stashes.Count; i++)
             {
-                Component component = instances[i] as Component;
-                if (component == null) continue;
+                CompanyStashController stash = CctvTargetRegistry.Stashes[i];
+                if (!stash.gameObject.activeInHierarchy) continue;
                 AddRootTarget(
-                    component.gameObject,
-                    kind,
-                    component.transform.position,
+                    stash.gameObject,
+                    TargetKind.Objective,
+                    stash.transform.position,
                     1.0f,
-                    displayLabel ?? CleanTypeLabel(typeName),
+                    "COMPANY STASH",
                     addGroundWhenNoRenderer: true);
             }
-        }
-
-        private static Type ResolveLguContractHudType(string typeName)
-        {
-            if (string.IsNullOrWhiteSpace(typeName)) return null;
-            return Type.GetType($"Y4NGZCompany.Facility.Mainframe.{typeName}, LethalCCTV", throwOnError: false)
-                   ?? Type.GetType($"Y4NGZCompany.Facility.Stash.{typeName}, LethalCCTV", throwOnError: false)
-                   ?? Type.GetType($"LGUContractHUD.{typeName}, LGUContractHUD", throwOnError: false);
         }
 
         private static void TryAddApparatusTargets()
@@ -576,13 +605,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (!ShowApparatusTrackingBox())
                 return;
 
-            LungProp[] apparatuses = UnityEngine.Object.FindObjectsByType<LungProp>(
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None);
-            for (int i = 0; i < apparatuses.Length; i++)
+            CctvTargetRegistry.Items.Prune();
+            for (int i = 0; i < CctvTargetRegistry.Items.Count; i++)
             {
-                LungProp apparatus = apparatuses[i];
-                if (apparatus == null || apparatus.gameObject == null)
+                if (!(CctvTargetRegistry.Items[i] is LungProp apparatus))
                     continue;
                 if (!apparatus.gameObject.activeInHierarchy)
                     continue;
@@ -633,14 +659,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void TryAddRadarBoosterTargets()
         {
-            Type radarType = Type.GetType("RadarBoosterItem, Assembly-CSharp", throwOnError: false);
-            if (radarType == null) return;
-
-            UnityEngine.Object[] boosters = UnityEngine.Object.FindObjectsOfType(radarType);
-            for (int i = 0; i < boosters.Length; i++)
+            CctvTargetRegistry.Items.Prune();
+            for (int i = 0; i < CctvTargetRegistry.Items.Count; i++)
             {
-                Component booster = boosters[i] as Component;
-                if (booster == null) continue;
+                if (!(CctvTargetRegistry.Items[i] is RadarBoosterItem booster))
+                    continue;
+                if (!booster.gameObject.activeInHierarchy) continue;
                 AddRootTarget(booster.gameObject, TargetKind.Objective, booster.transform.position, 0.9f, "RADAR", addGroundWhenNoRenderer: true);
             }
         }
@@ -746,14 +770,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (indexByRoot.TryGetValue(id, out int existingIndex))
             {
                 ScreenTarget existing = targets[existingIndex];
-                Bounds mergedBounds = existing.Bounds;
-                mergedBounds.Encapsulate(bounds);
-                existing = new ScreenTarget(mergedBounds, existing.Root, existing.Kind, id, existing.Label);
+                // The highest-priority producer owns the label AND tight geometry.
                 if (Priority(kind) > Priority(existing.Kind))
-                    existing = new ScreenTarget(mergedBounds, existing.Root, kind, id, existing.Label);
-                if (string.IsNullOrEmpty(existing.Label))
-                    existing = new ScreenTarget(mergedBounds, existing.Root, existing.Kind, id, normalized);
-                targets[existingIndex] = existing;
+                    targets[existingIndex] = new ScreenTarget(bounds, root, kind, id, normalized);
                 return;
             }
 
@@ -761,10 +780,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             targets.Add(new ScreenTarget(bounds, root, kind, id, normalized));
         }
 
-        private static void AddBoundsTarget(Bounds bounds, TargetKind kind, string label = null)
+        private static void AddBoundsTarget(Bounds bounds, TargetKind kind, string label = null,
+            string key = null, bool isArea = false, float radius = 1f, Transform root = null)
         {
-            int id = _nextSyntheticSourceId--;
-            BuildScreenTargets.Add(new ScreenTarget(bounds, null, kind, id, NormalizeLabel(label, null, kind)));
+            key = key ?? (label + ":" + bounds.center.ToString("F2"));
+            if (!_stableIds.TryGetValue(key, out int id))
+                _stableIds[key] = id = _nextSyntheticSourceId--;
+            BuildScreenTargets.Add(new ScreenTarget(bounds, root, kind, id, NormalizeLabel(label, null, kind), isArea, radius));
         }
 
         private static void AddGroundTarget(Vector3 position, float radius, TargetKind kind)
@@ -793,7 +815,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                         position,
                         ReadMemberFloat(marker, "Radius", 1.0f),
                         complete,
-                        ReadMemberComponent(marker, "Target")));
+                        marker is ISpatialObjectiveMarker pose ? pose.Target as Component : ReadMemberComponent(marker, "Target"),
+                        marker is ISpatialObjectiveMarker spatial ? spatial.Key : ReadMemberString(marker, "Key", null),
+                        marker is ISpatialObjectiveMarker geometry && geometry.IsArea));
                 }
             }
             catch (Exception ex)
@@ -838,6 +862,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     }
                 }
 
+                if (marker.Target != null || marker.IsArea) continue;
                 float radius = Mathf.Max(marker.Radius, 0.8f) + 1.0f;
                 if ((position - marker.Position).sqrMagnitude <= radius * radius)
                     return true;
@@ -851,6 +876,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             {
                 ObjectiveMarkerInfo marker = _objectiveMarkers[i];
                 if (marker.IsComplete) continue;
+                if (marker.Target != null || marker.IsArea) continue;
                 float radius = Mathf.Max(marker.Radius, 0.8f) + 1.0f;
                 if ((position - marker.Position).sqrMagnitude <= radius * radius)
                     return true;
@@ -901,7 +927,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 {
                     ScreenTarget target = _screenTargets[i];
                     if (target.TracksRoot && target.Root != null)
-                        _screenIndexByRoot[target.SourceId] = i;
+                        _screenIndexByRoot[target.Root.gameObject.GetInstanceID()] = i;
                 }
             }
         }
@@ -934,12 +960,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             string typeName = type != null ? type.Name : string.Empty;
             string objectName = root != null ? root.name : string.Empty;
             return Contains(typeName, "Radar") || Contains(objectName, "Radar");
-        }
-
-        private static string CleanTypeLabel(string typeName)
-        {
-            if (string.IsNullOrWhiteSpace(typeName)) return null;
-            return typeName.Replace("Support", string.Empty).Replace("System", string.Empty);
         }
 
         private static string NormalizeLabel(string label, string fallbackName, TargetKind kind)

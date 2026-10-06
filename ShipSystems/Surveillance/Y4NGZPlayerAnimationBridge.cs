@@ -187,26 +187,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static bool ApiKeepCameraAnchorDuringControl => true;
 
-        // The reach assist was retired by the 2026-07-22 camera-lean redesign
-        // (the assist moved the anchor toward contacts, which the redesign
-        // forbids; reach comes from the enter camera path leaning in). Its two
-        // config keys and its runtime branch were deleted for 1.0 (#575).
-
         internal static bool UseApiExitRetractToRest => true;
 
         internal static float ApiExitRetractSeconds => 0.30f;
 
-        // Yaw-flat camera-frame anchor, the verified Current-profile tuning:
-        // Z=-0.32 (was 0.2) with the yaw-flat frame keeps the shoulder mid
-        // below the bottom frustum plane so the truncated arm caps stay
-        // off-screen (#575; round-6 regression evidence).
+        // Calibrated in the final camera frame so entry pitch cannot reveal
+        // the shoulder cuts. The closer operating eye preserves control reach.
         internal static Vector3 ApiCameraAnchorOffset =>
-            new Vector3(0f, -0.25f, -0.32f);
-
-        // The pitch-relative anchor frame lost its last consumer for 1.0 (#575):
-        // the gate promoted to a compile-time false, so the yaw-flat frame above
-        // is the only camera-hold frame. Its switch and view offset were deleted
-        // with the dead branches rather than left as unreachable constants.
+            new Vector3(0f, -0.70f, 0.72f);
 
         internal static bool UseApiShoulderCapPlugs => true;
 
@@ -219,10 +207,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         internal static bool UseApiElbowPoleHints => true;
 
         internal static Vector3 ApiLeftElbowPoleStation =>
-            new Vector3(0.20f, 0.90f, 0.90f);
+            new Vector3(-0.10f, 0.90f, 1.05f);
 
         internal static Vector3 ApiRightElbowPoleStation =>
-            new Vector3(0.22f, 0.90f, 0.20f);
+            new Vector3(0.05f, 0.72f, -0.13f);
 
         internal static bool PinRightHandRestToStationDuringApiSession => true;
 
@@ -453,6 +441,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             CCTVOperatorAnimSync.Tick();
         }
 
+        internal static void EvaluateLocalEnterAnimationBeforeCamera(float presentationSeconds, bool complete)
+            => _localSession?.EvaluateApiEnterAnimatorFromCameraClock(presentationSeconds, complete);
+
         /// <summary>
         /// Runs after MonitorFocus has applied the gameplay camera pose and moved
         /// the arms-only root into its captured camera-relative viewmodel pose.
@@ -462,16 +453,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         internal static void TickLocalFirstPersonHandsAfterCamera()
         {
             _localSession?.TickFirstPersonHandsAfterCamera();
+            CCTVOperatorAnimSync.TickRemoteHandsAfterCamera();
             OperatorAnimSession.TickPostExitArmsTelemetry();
         }
 
         private static void OnCameraPreCull(Camera camera)
         {
+            _localSession?.PrepareFirstPersonHandsForRender(camera);
             _localSession?.TraceFirstPersonHandsPreCull(camera);
         }
 
         private static void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
         {
+            _localSession?.PrepareFirstPersonHandsForRender(camera);
             _localSession?.TraceFirstPersonHandsPreCull(camera);
         }
 
@@ -1015,12 +1009,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         {
             if (_localSession == null || !_localSession.IsActive) return;
             if (_firstPersonRightHandEditModeActive) return;
-            if (ShouldSuppressCameraUnsafeRightHandAction("camera-select"))
-            {
-                _localSession.SetActiveSlotQuiet(slot);
-                return;
-            }
-
             _localSession.SelectCamera(slot);
             CCTVOperatorAnimSync.SendSelectCamera(_localSession.Player, slot);
         }
@@ -1066,7 +1054,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static bool ShouldSuppressCameraUnsafeRightHandAction(string actionId)
         {
-            return false;
+            return actionId != "device-command-open" && actionId != "object-action-accepted" && actionId != "stand-up";
         }
 
         internal static int ResolveActionButtonId(string actionId)

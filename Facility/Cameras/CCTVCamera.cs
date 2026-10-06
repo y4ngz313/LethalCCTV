@@ -2,6 +2,7 @@ using DunGen;
 using UnityEngine;
 using UnityEngine.Rendering.HighDefinition;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.ShipSystems.Rendering;
 
 namespace Y4NGZCompany.Facility.Cameras
 {
@@ -43,6 +44,12 @@ namespace Y4NGZCompany.Facility.Cameras
         internal string PlacementHitName { get; set; }
         internal int PlacementHitLayer { get; set; }
         internal Vector3 PlacementSurfaceNormal { get; set; }
+        // #1313 diagnostics. PlacementTier names the placement pass that produced the
+        // pose (strict, relaxed, expanded, expanded-relaxed, grand-room, reviewed,
+        // authored, support-*); PlacementSurfaceDistanceM is the pose's distance from
+        // the validated mount surface along PlacementSurfaceNormal (0 = no validated surface).
+        public string PlacementTier;
+        public float PlacementSurfaceDistanceM;
         internal float PlacementScore { get; set; }
         internal float PlacementHeightAboveFloorM { get; set; }
         internal float PlacementCenterSightDistanceM { get; set; }
@@ -81,6 +88,7 @@ namespace Y4NGZCompany.Facility.Cameras
         // transform.rotation (world-space) is stable.
         //
         // State dies with the GameObject on dungeon regen — no static dict.
+        internal Placement.CameraPanEnvelope SafetyEnvelope { get; set; }
         internal float BaseYawDeg { get; private set; }
         internal float BasePitchDeg { get; private set; }
         internal float YawOffsetDeg { get; set; }
@@ -205,12 +213,19 @@ namespace Y4NGZCompany.Facility.Cameras
 
         internal void ApplyOffsets()
         {
+            // Apply the user's narrower pitch limit before the shared safety
+            // gate. No later clamp may rotate away from the validated pose.
+            PitchOffsetDeg = Mathf.Clamp(BasePitchDeg + PitchOffsetDeg, -5f,
+                SurveillanceBootstrap.Config.PitchClampDeg) - BasePitchDeg;
+            if (SafetyEnvelope != null)
+            {
+                float safeYaw = YawOffsetDeg, safePitch = PitchOffsetDeg;
+                SafetyEnvelope.Constrain(ref safeYaw, ref safePitch);
+                YawOffsetDeg = safeYaw; PitchOffsetDeg = safePitch;
+                if (Cam != null) Cam.farClipPlane = Mathf.Max(Cam.farClipPlane, SafetyEnvelope.RequiredDistance);
+            }
             float yaw = BaseYawDeg + YawOffsetDeg;
-            float pitchClamp = SurveillanceBootstrap.Config.PitchClampDeg;
-            float pitch = Mathf.Clamp(
-                BasePitchDeg + PitchOffsetDeg,
-                -5f,
-                +pitchClamp);
+            float pitch = BasePitchDeg + PitchOffsetDeg;
             transform.rotation = Quaternion.Euler(pitch, yaw, 0f);
         }
 
@@ -278,79 +293,30 @@ namespace Y4NGZCompany.Facility.Cameras
             return _nightVisionFillLight;
         }
 
-        // CCTV-tuned FrameSettings override set. Disables the heavy HDRP passes that
-        // a security-feed camera does not need (post-FX, screen-space shadow/SSAO/SSR
-        // passes, reflection probes, volumetrics, decals, custom passes,
-        // motion vectors, exposure, SSS, refraction/distortion). Shadow maps are
-        // opt-in because modded interiors can have dozens of shadow-casting lights.
-        // AtmosphericScattering kept so dungeon fog still reads on the feed.
-        //
-        // The override mask + SetEnabled pair is the LC HDRP version's canonical
-        // per-field override mechanism — verified against OBC's body-cam construction
-        // path (research/_obc-dump.cs:653-661).
+        // The feed's immutable CCTV frame-settings profile. Core's CameraRenderProfile owns every
+        // write: it disables the heavy HDRP passes a security feed does not need (post-FX,
+        // screen-space shadows/SSR, reflection probes, volumetrics, decals, custom passes, motion
+        // vectors, exposure, SSS, refraction/distortion), keeps TransparentObjects and atmospheric
+        // scattering, and takes the configurable shadow-map/SSAO pair from config. Classifying the
+        // camera as a Feed also makes it refuse every settings lease: an effect on the feed (the
+        // squad-ping outline) is an overlay composited by NightVisionBaker after the bake, so a ping
+        // can never turn the feed's custom passes on and black it out (#1219 G1/G2).
         internal void ApplyStripSet()
         {
-            // Intentionally NOT guarded by StripActive — re-asserts the override
-            // mask + values on every bind so a future pooled-holder scheme (or a
-            // dungeon regen path that happens to reuse the same holder instance)
-            // is correct by construction rather than correct-by-accident. The
-            // call is cheap: ~20 field writes on already-allocated structs.
-            if (HdrpData == null) return;
+            // Intentionally NOT guarded by StripActive — re-asserts the profile on every bind so a
+            // pooled holder or a reused regen instance is correct by construction.
+            if (HdrpData == null || Cam == null) return;
 
-            HdrpData.customRenderingSettings = true;
-            ref FrameSettings fs = ref HdrpData.renderingPathCustomFrameSettings;
-            ref FrameSettingsOverrideMask mask = ref HdrpData.renderingPathCustomFrameSettingsOverrideMask;
-
-            // Post-processing umbrella + AfterPostprocess. Disabling Postprocess
-            // also disables the dependent sub-fields (MotionBlur, DoF, Bloom,
-            // Tonemapping, ColorGrading, Vignette, Antialiasing, FilmGrain,
-            // ChromaticAberration, LensDistortion, StopNaN, PaniniProjection,
-            // LensFlareDataDriven, Dithering) via HDRP's dependency model.
-            Strip(ref fs, ref mask, FrameSettingsField.Postprocess);
-            Strip(ref fs, ref mask, FrameSettingsField.CustomPostProcess);
-            Strip(ref fs, ref mask, FrameSettingsField.AfterPostprocess);
-
-            if (SurveillanceBootstrap.Config == null || !SurveillanceBootstrap.Config.CCTVShadowMapsEnabled.Value)
-                Strip(ref fs, ref mask, FrameSettingsField.ShadowMaps);
-
-            // Strip the two screen-space shadow passes regardless; they are heavy
-            // and add little to the security-feed read.
-            Strip(ref fs, ref mask, FrameSettingsField.ContactShadows);
-            Strip(ref fs, ref mask, FrameSettingsField.ScreenSpaceShadows);
-
-            // Screen-space effects.
-            Strip(ref fs, ref mask, FrameSettingsField.SSR);
-            Strip(ref fs, ref mask, FrameSettingsField.SSAO);
-            Strip(ref fs, ref mask, FrameSettingsField.SSGI);
-
-            // Heavy passes a security-feed pipeline does not need. TransparentObjects
-            // intentionally remains enabled: some enemies/items use cutout/transparent
-            // HDRP materials, and stripping the pass made them disappear from CCTV feeds.
-            Strip(ref fs, ref mask, FrameSettingsField.Decals);
-            Strip(ref fs, ref mask, FrameSettingsField.CustomPass);
-            Strip(ref fs, ref mask, FrameSettingsField.MotionVectors);
-            Strip(ref fs, ref mask, FrameSettingsField.ReflectionProbe);
-            Strip(ref fs, ref mask, FrameSettingsField.PlanarProbe);
-            Strip(ref fs, ref mask, FrameSettingsField.ExposureControl);
-            Strip(ref fs, ref mask, FrameSettingsField.Volumetrics);
-            Strip(ref fs, ref mask, FrameSettingsField.SubsurfaceScattering);
-            Strip(ref fs, ref mask, FrameSettingsField.Distortion);
-            Strip(ref fs, ref mask, FrameSettingsField.Refraction);
-
-            StripActive = true;
-        }
-
-        private static void Strip(
-            ref FrameSettings fs, ref FrameSettingsOverrideMask mask, FrameSettingsField field)
-        {
-            fs.SetEnabled(field, false);
-            mask.mask[(uint)field] = true;
+            StripActive = CameraRenderProfile.ApplyFeedProfile(
+                Cam,
+                SurveillanceBootstrap.Config?.CCTVShadowMapsEnabled.Value ?? true,
+                SurveillanceBootstrap.Config?.CCTVAmbientOcclusionEnabled.Value ?? true);
         }
 
         internal void RevertStripSet()
         {
             if (!StripActive) return;
-            if (HdrpData != null) HdrpData.customRenderingSettings = false;
+            if (Cam != null) CameraRenderProfile.ReleaseProfile(Cam);
             StripActive = false;
         }
     }

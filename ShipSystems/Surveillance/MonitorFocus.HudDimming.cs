@@ -240,6 +240,29 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
         }
 
+        // The overlay is bound by canvas name because LethalCCTV only soft-depends on the
+        // owning plugin. The first token is the Y4NGZUI canvas (post-#660 home); the legacy
+        // token still matches installs running a pre-split Y4NGZUpgrades overlay.
+        private static readonly string[] PromptOverlayCanvasNameTokens =
+        {
+            "Y4NGZUI_PromptOverlayCanvas",
+            "Y4NGZInteractive_PromptOverlayCanvas",
+        };
+
+        private static bool NameContainsPromptOverlayToken(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return false;
+
+            foreach (string token in PromptOverlayCanvasNameTokens)
+            {
+                if (name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+
+            return false;
+        }
+
         private static void AddY4ngzPromptOverlayTargets()
         {
             try
@@ -249,7 +272,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 {
                     if (canvas == null || canvas.gameObject == null || !canvas.gameObject.activeInHierarchy)
                         continue;
-                    if (canvas.gameObject.name.IndexOf("Y4NGZInteractive_PromptOverlayCanvas", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (NameContainsPromptOverlayToken(canvas.gameObject.name))
                     {
                         AddFocusHudDimTarget(canvas.transform, preferParent: false);
                     }
@@ -261,10 +284,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     if (text == null || text.gameObject == null || !text.gameObject.activeInHierarchy)
                         continue;
 
-                    Transform promptRoot = FindNamedAncestor(text.transform, "Y4NGZInteractive_PromptOverlayCanvas");
-                    if (promptRoot != null)
+                    foreach (string token in PromptOverlayCanvasNameTokens)
                     {
-                        AddFocusHudDimTarget(promptRoot, preferParent: false);
+                        Transform promptRoot = FindNamedAncestor(text.transform, token);
+                        if (promptRoot != null)
+                        {
+                            AddFocusHudDimTarget(promptRoot, preferParent: false);
+                            break;
+                        }
                     }
                 }
             }

@@ -315,8 +315,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _rightCompositorDirty = true;
             _forceFastMaterialVerify = true;
             _lastCompositorRenderAt = 0f;
-            _nextCompositorRenderAt = 0f;
-            _nextRightCompositorRenderAt = 0f;
             _nextBindMaintenanceAt = 0f;
             SurveillanceBootstrap.Log?.LogInfo(
                 "[LethalCCTV] Ship power restored; CCTV feed and radar monitors resumed.");
@@ -369,7 +367,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 _lowerRightBinding.Restore();
                 _lowerLeftBinding.Restore();
                 _nextBindMaintenanceAt = 0f;
-                _nextCompositorRenderAt = 0f;
                 _nextReassertAt = 0f;
                 _nextFullSuppressionAt = 0f;
                 _nextFastMaterialVerifyAt = 0f;

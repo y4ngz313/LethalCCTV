@@ -38,12 +38,39 @@ namespace Y4NGZCompany.Bootstrap
         internal static DungeonCameraSpawner CameraSpawner;
 
         private Harmony _harmony;
+        private bool _terminalCompanionPatchAttempted;
         private Coroutine _subscribeCoroutine;
         private float _nextMonitorSpawnProbeTime;
         private float _nextIdleCompatTickAt;
         private bool _lastKnownShipPhase = true;
         private readonly Dictionary<string, float> _lateUpdateErrorLogTimes = new Dictionary<string, float>();
         private const float IdleCompatTickIntervalSeconds = 0.5f;
+
+        /// <summary>#716 A6. Round-scoped handshake between the camera pipeline and the
+        /// support camera injector.
+        ///
+        /// <c>CamerasReady</c> is raised while <c>DungeonCameraSpawner.SpawnPipelineInProgress</c>
+        /// is still set. <see cref="RunCamerasReadyFollowUps"/> runs
+        /// <c>CctvSecurityCameraRegistry.RegisterCameras</c> - which begins with
+        /// <c>Cameras.Clear()</c> - inside that call (#1283: inside the dungeon-finished event).
+        /// An injector released on the pipeline flag alone would have no defined ordering
+        /// against the registry rebuild; when the injector wins, its
+        /// <c>RegisterSupplementaryCamera</c> entries are wiped by the clear for the whole round.
+        ///
+        /// This flag is the "the registry now holds this round's cameras" token. It is cleared as
+        /// soon as a placement pass is observed running (and again when the follow-up coroutine
+        /// starts) and set only after <c>RegisterCameras</c> has returned, so an injector that
+        /// waits on it can never be the one that runs first.
+        ///
+        /// It starts true: an install or a flow where the pipeline never runs must not block
+        /// support spawning forever.</summary>
+        internal static bool SecurityRegistryReadyForRound = true;
+
+        /// <summary>#716 A6. Consecutive frames the token has been observed closed with no
+        /// placement pass and no follow-up coroutine running. See the recovery block in
+        /// <see cref="LateUpdateCore"/>.</summary>
+        private int _staleRegistryTokenFrames;
+        private const int StaleRegistryTokenRecoveryFrames = 5;
 
         internal void Initialize(ConfigFile configFile, ManualLogSource logger)
         {
@@ -56,6 +83,7 @@ namespace Y4NGZCompany.Bootstrap
             CctvConfigSurfaceMigration.Migrate(configFile, logger);
             CctvModuleConfig.Bind(configFile, logger);
             Config = new LethalCCTVConfig(configFile);
+            CCTVTerminalUnlockable.InitializeOwnership(Config);
             SoftDeps = new SoftDependencies();
             OpenBodyCamsCompat.Initialize();
             CCTVTerminalUnlockable.Register();
@@ -68,6 +96,10 @@ namespace Y4NGZCompany.Bootstrap
             // project: QuickMenuPatch suppresses vanilla pause-menu open while focus
             // mode is active.
             ApplyHarmonyPatchesSafe();
+            // #1219 G4: hooks scene unload for the target registry and picks up objects that
+            // existed before the lifecycle patches. One scan per process; every later spawn
+            // reaches the registry through the patches.
+            CctvTargetRegistry.Initialize();
 
             Log.LogInfo($"[LethalCCTV] Plugin loaded. v{SurveillancePluginInfo.PLUGIN_VERSION}");
             Log.LogInfo($"[LethalCCTV] Soft-dep OpenBodyCams: {SoftDeps.OpenBodyCams}");
@@ -118,8 +150,14 @@ namespace Y4NGZCompany.Bootstrap
             FacilityMeltdownCompat.Initialize();
 
             var filter = new TileExclusionFilter(Config);
-            CameraSpawner = new DungeonCameraSpawner(Config, filter, this);
+            CameraSpawner = new DungeonCameraSpawner(Config, filter);
             CameraSpawner.CamerasReady += OnCamerasReady;
+
+            // #1271: the camera prop bundle is read here, at boot. Props are built inside the
+            // camera pass, which must never pay the ~60 ms bundle read; a later config toggle
+            // still loads it lazily.
+            if (Config.PhysicalCameraVisualsEnabled.Value)
+                PhysicalCameraVisualLoader.TryLoad();
 
             // Phase 1.7 â€” display-side night-vision hot reload. SettingChanged on either
             // of the two new entries pushes fresh values into every live quad material.
@@ -130,6 +168,7 @@ namespace Y4NGZCompany.Bootstrap
             MonitorFocus.Initialize();
             Y4NGZPlayerAnimationBridge.Initialize();
             CCTVMonitorFeedSync.Initialize();
+            CctvDeviceCommands.Initialize();
             ShipTurretController.Initialize();
             CctvOutlineManager.Initialize();
             if (Config.ReconLoggingEnabled.Value)
@@ -178,12 +217,30 @@ namespace Y4NGZCompany.Bootstrap
             // this optional reflection patch reproduces its authoritative pellet traces.
             TryPatch(typeof(Y4NGZCompany.Facility.Cameras.BetterArmoryCameraDamagePatch));
             TryPatch(typeof(CctvAlarmLockdownTeleportPatch));
-            // #393: only a Contracted-less install sells the CCTV terminal through the
-            // vanilla store, and only that route needs the prefab woken across
-            // StartOfRound.SpawnUnlockable. With Contracted present the patch is never
-            // applied, so that configuration keeps its exact pre-#393 call graph.
-            if (CCTVTerminalUnlockable.SoldInVanillaStore)
-                TryPatch(typeof(CctvTerminalStoreSpawnPatch));
+            TryPatch(typeof(CctvTerminalOwnershipLifecyclePatch));
+            // Hidden free grants also reload through vanilla SpawnUnlockable. Both
+            // seller routes must wake/restore the inactive network-prefab template.
+            TryPatch(typeof(CctvTerminalStoreSpawnPatch));
+            // #1219 G4: spawn/despawn registry behind the CCTV target cache. One class per
+            // boundary so a failed target cannot take the other categories with it.
+            TryPatch(typeof(CctvTargetRegistryNetworkSpawnPatch));
+            TryPatch(typeof(CctvTargetRegistryNetworkDespawnPatch));
+            TryPatch(typeof(CctvTargetRegistryItemPatches));
+            TryPatch(typeof(CctvTargetRegistryEnemyPatches));
+            TryPatch(typeof(CctvTargetRegistryEntrancePatch));
+            TryPatch(typeof(CctvTargetRegistryDevicePatches));
+            TryPatch(typeof(CctvTargetRegistryStashPatch));
+        }
+
+        internal void ApplyTerminalCompanionOwnershipPatchOnce()
+        {
+            if (_terminalCompanionPatchAttempted)
+                return;
+
+            // First ship Awake is after BepInEx chainloading; plugin Awake is not.
+            // The optional companion may load after CCTV, so only probe it here.
+            _terminalCompanionPatchAttempted = true;
+            TryPatch(typeof(CctvTerminalCompanionOwnershipPatch));
         }
 
         private void TryPatch(System.Type patchType)
@@ -209,8 +266,31 @@ namespace Y4NGZCompany.Bootstrap
             _subscribeCoroutine = null;
         }
 
+        /// <summary>#716 A6 / #1283. The CamerasReady follow-ups: station ensure, focus
+        /// teardown, registry rebuild, alarm fixture spawn, quad-monitor render-texture
+        /// allocation. The first four run inside the CamerasReady call, i.e. inside the camera
+        /// pass in the dungeon-finished event; monitor spawn waits one more frame.</summary>
+        private Coroutine _camerasReadyCoroutine;
+
         private void OnCamerasReady(IReadOnlyList<CCTVCamera> cameras)
         {
+            if (_camerasReadyCoroutine != null)
+            {
+                StopCoroutine(_camerasReadyCoroutine);
+                _camerasReadyCoroutine = null;
+            }
+            _camerasReadyCoroutine = StartCoroutine(RunCamerasReadyFollowUps(cameras));
+        }
+
+        private IEnumerator RunCamerasReadyFollowUps(IReadOnlyList<CCTVCamera> cameras)
+        {
+            // The registry rebuild below starts with Cameras.Clear(). Nothing may
+            // register a supplementary camera until it has run.
+            SecurityRegistryReadyForRound = false;
+
+            // Station + focus teardown. ForceExit must run before anything
+            // rebinds, because the previous round's active-pane holder is already a
+            // destroyed Unity object by the time this fires.
             CCTVOperatorStation.Ensure();
 
             // Dungeon regen destroys the previous round's CCTVCamera GOs.
@@ -224,15 +304,25 @@ namespace Y4NGZCompany.Bootstrap
             CCTVScanGlowManager.ClearAll();
             CctvTargetCache.Clear();
 
+            // Registry rebuild. The token is raised the instant RegisterCameras
+            // returns, so a support injector parked on it resumes no earlier than the
+            // following frame - strictly after Cameras.Clear().
             CctvSecurityCameraRegistry.RegisterCameras(cameras);
-            InteriorAlarmSpawner.SpawnForRegisteredCameras();
+            SecurityRegistryReadyForRound = true;
 
+            // Alarm fixture spawn (local on every peer): inline here when an inside teleport
+            // already exists, otherwise its own deferred wait for the inside teleports.
+            InteriorAlarmSpawner.SpawnForRegisteredCameras();
+            yield return null;
+
+            // Next frame - monitor spawn and render-texture allocation.
             if (!CCTVTerminalUnlockable.IsPurchased())
             {
                 QuadCameraAssignment.Unassign();
                 QuadMonitor.Despawn();
                 Log.LogInfo("[LethalCCTV] CCTV terminal not purchased; camera feeds remain offline.");
-                return;
+                _camerasReadyCoroutine = null;
+                yield break;
             }
 
             // Spawn idempotent across rounds: reuses the existing monitor + RTs.
@@ -243,6 +333,7 @@ namespace Y4NGZCompany.Bootstrap
             // enters CCTV (2026-07-02 spec); reassert whatever the shared feed
             // state currently says instead of forcing CCTV mode on.
             CCTVMonitorFeedSync.ApplyFeedToDisplay();
+            _camerasReadyCoroutine = null;
         }
 
         private void OnNightVisionParamsChanged()
@@ -257,6 +348,11 @@ namespace Y4NGZCompany.Bootstrap
         /// culprit — including an "unattributed" remainder covering the work that runs outside
         /// RunLateUpdateStep (camera-spawner subscribe, monitor spawn probe, feed clears).</summary>
         private const double SlowPassLogThresholdMilliseconds = 5.0;
+        /// <summary>Threshold used when the diagnostics toggle is off. 5 ms is an
+        /// investigation threshold, not a problem threshold. One frame at 60 fps is the
+        /// point at which a pass is a real problem, so that is what an ordinary session
+        /// reports on.</summary>
+        private const double SlowPassPlayThresholdMilliseconds = 16.0;
         private const float SlowPassLogIntervalSeconds = 5f;
         /// <summary>Severity escape hatch for the 5s throttle. A 473.92ms pass was recorded at
         /// 20:56:00 on 2026-07-31 and its per-step breakdown was computed and then thrown away,
@@ -305,7 +401,10 @@ namespace Y4NGZCompany.Bootstrap
 
         private void ReportSlowPass(double passMilliseconds)
         {
-            if (passMilliseconds < SlowPassLogThresholdMilliseconds)
+            bool diagnostics = Config?.PerformanceTimingLogging?.Value == true;
+            if (passMilliseconds < (diagnostics
+                    ? SlowPassLogThresholdMilliseconds
+                    : SlowPassPlayThresholdMilliseconds))
                 return;
 
             bool extreme = passMilliseconds >= ExtremePassLogThresholdMilliseconds;
@@ -359,15 +458,19 @@ namespace Y4NGZCompany.Bootstrap
                 line.Append("ms");
             }
 
-            Log?.LogWarning(line.ToString());
+            // An extreme pass is a fault worth shouting about whatever the toggle says. An
+            // ordinary slow pass is profiling detail, so it only reaches Warning while the
+            // diagnostics toggle is on.
+            if (extreme || diagnostics)
+                Log?.LogWarning(line.ToString());
+            else
+                Log?.LogInfo(line.ToString());
         }
 
         internal static void RecordLateUpdateNestedStep(string stepName, long elapsedTicks)
         {
             _frameNestedStepMilliseconds.TryGetValue(stepName, out double accumulated);
             _frameNestedStepMilliseconds[stepName] = accumulated + TicksToMilliseconds(elapsedTicks);
-            if (MonitorFocus.IsFocused)
-                FocusPerfProbe.RecordStep(stepName, elapsedTicks);
         }
 
         // Cached delegates for the steps that wrap instance methods or need a closure. Allocating
@@ -378,8 +481,8 @@ namespace Y4NGZCompany.Bootstrap
         private System.Action _stepEnsurePersistentMonitor;
         private System.Action _stepClearFeedsWhenShipPhaseBegins;
         private System.Action _stepReadFocusState;
-        private System.Action _stepFocusPerfProbe;
         private System.Action _stepSweepMotorTickAll;
+        private System.Action _stepRenderSchedulerPump;
         private bool _focusedThisFrame;
 
         // #502 — the unpurchased teardown used to run all four of its shutdown
@@ -397,8 +500,8 @@ namespace Y4NGZCompany.Bootstrap
             _stepEnsurePersistentMonitor = EnsurePersistentMonitor;
             _stepClearFeedsWhenShipPhaseBegins = ClearFeedsWhenShipPhaseBegins;
             _stepReadFocusState = ReadFocusState;
-            _stepFocusPerfProbe = TickFocusPerfProbe;
             _stepSweepMotorTickAll = TickCameraSweepMotors;
+            _stepRenderSchedulerPump = CctvRenderScheduler.Pump;
         }
 
         // Re-subscribe every frame (reference-compare no-op when unchanged):
@@ -426,14 +529,6 @@ namespace Y4NGZCompany.Bootstrap
             _focusedThisFrame = MonitorFocus.IsFocused;
         }
 
-        private void TickFocusPerfProbe()
-        {
-            if (MonitorFocus.IsFocused)
-                FocusPerfProbe.OnFocusedFrame();
-            else if (_focusedThisFrame)
-                FocusPerfProbe.OnFocusEnded();
-        }
-
         private void TearDownForUnpurchasedTerminal()
         {
             // Latch: nothing below re-creates state while unpurchased, so a
@@ -455,12 +550,48 @@ namespace Y4NGZCompany.Bootstrap
             }
             CCTVMarkerManager.ClearAll();
             CCTVScanGlowManager.ClearAll();
+            CctvRenderScheduler.CancelAll();
             CCTVVanillaMonitorDisplay.Shutdown();
             CCTVFocusControlsOverlay.Shutdown();
         }
 
         private void LateUpdateCore()
         {
+            // #716 A6. Covers any placement pass observed running before CamerasReady fired,
+            // while the registry still holds last round's cameras. #1283: the pass completes
+            // inside the dungeon-finished event, so this normally reads false. One bool read
+            // per frame.
+            if (DungeonCameraSpawner.SpawnPipelineInProgress)
+            {
+                SecurityRegistryReadyForRound = false;
+                _staleRegistryTokenFrames = 0;
+            }
+            else if (!SecurityRegistryReadyForRound && _camerasReadyCoroutine == null)
+            {
+                // Staleness recovery. The token is only ever raised by the follow-up
+                // coroutine, so a pipeline that dies before raising CamerasReady (its
+                // exception is swallowed inside the spawner) or a coroutine stopped
+                // mid-window would latch it false for the rest of the session, and every
+                // later support-injection pass would burn its full 600-frame wait. If the
+                // pipeline flag is clear and no follow-up is running, nothing is coming to
+                // raise it - so raise it here. The few-frame delay keeps this off the
+                // legitimate handoff window between the pipeline clearing its flag and
+                // StartCoroutine assigning the handle.
+                if (++_staleRegistryTokenFrames >= StaleRegistryTokenRecoveryFrames)
+                {
+                    _staleRegistryTokenFrames = 0;
+                    SecurityRegistryReadyForRound = true;
+                    Log?.LogDebug(
+                        "[LethalCCTV] Security registry token was still closed with no camera " +
+                        "pipeline or CamerasReady follow-up running; reopening it so support " +
+                        "camera injection is not blocked.");
+                }
+            }
+            else
+            {
+                _staleRegistryTokenFrames = 0;
+            }
+
             EnsureLateUpdateStepDelegates();
             RunLateUpdateStep("CameraSpawner.Subscribe", _stepCameraSpawnerSubscribe);
             RunLateUpdateStep("CCTVOperatorStation.Ensure", CCTVOperatorStation.Ensure);
@@ -476,7 +607,16 @@ namespace Y4NGZCompany.Bootstrap
 
             if (!CCTVTerminalUnlockable.IsPurchased())
             {
-                RunLateUpdateStep("OpenBodyCamsCompat.Tick", OpenBodyCamsCompat.Tick);
+                // #716 C5: this branch used to run the compat tick every frame while the
+                // purchased branch below throttles to IdleCompatTickIntervalSeconds. The
+                // unpurchased tick only suppresses store entries and tears feeds down, so
+                // it never needed frame cadence; the reflection/material probe work inside
+                // measured 4.77ms on a zero-camera pass.
+                if (Time.unscaledTime >= _nextIdleCompatTickAt)
+                {
+                    _nextIdleCompatTickAt = Time.unscaledTime + IdleCompatTickIntervalSeconds;
+                    RunLateUpdateStep("OpenBodyCamsCompat.Tick", OpenBodyCamsCompat.Tick);
+                }
                 RunLateUpdateStep("TerminalNotPurchased.Teardown", _stepTerminalNotPurchasedTeardown);
                 return;
             }
@@ -522,7 +662,9 @@ namespace Y4NGZCompany.Bootstrap
             if (focused || CCTVScanGlowManager.HasActiveGlows)
                 RunLateUpdateStep("CCTVScanGlowManager.Tick", CCTVScanGlowManager.Tick);
 
-            RunLateUpdateStep("FocusPerfProbe.Tick", _stepFocusPerfProbe);
+            // #1219 G4: the one place LethalCCTV's manual Camera.Render calls run, after
+            // every producer above has stated its request for this frame.
+            RunLateUpdateStep("CctvRenderScheduler.Pump", _stepRenderSchedulerPump);
         }
 
         private void RunLateUpdateStep(string stepName, System.Action action)
@@ -530,9 +672,7 @@ namespace Y4NGZCompany.Bootstrap
             if (action == null) return;
 
             // Always timed since 2026-07-31 (GetTimestamp is a raw QPC read; negligible next to
-            // the work being measured): the per-frame breakdown feeds the slow-pass report, and
-            // the focus probe keeps its original focused-only recording.
-            bool focusTimed = MonitorFocus.IsFocused;
+            // the work being measured): the per-frame breakdown feeds the slow-pass report.
             long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
 
             try
@@ -554,12 +694,9 @@ namespace Y4NGZCompany.Bootstrap
                 long elapsed = endedAt - startedAt;
                 _frameStepMilliseconds.TryGetValue(stepName, out double accumulated);
                 _frameStepMilliseconds[stepName] = accumulated + TicksToMilliseconds(elapsed);
-                if (focusTimed)
-                    FocusPerfProbe.RecordStep(stepName, elapsed);
 
                 // The bookkeeping above runs inside the timed pass but outside every step's own
-                // measurement, so it used to land in "unattributed" — and FocusPerfProbe.RecordStep
-                // only runs while focused, which is exactly the focused-only shape of the gap.
+                // measurement, so it is charged to the harness instead of "unattributed".
                 _harnessMilliseconds += TicksToMilliseconds(System.Diagnostics.Stopwatch.GetTimestamp() - endedAt);
             }
         }
@@ -633,6 +770,14 @@ namespace Y4NGZCompany.Bootstrap
                 StopCoroutine(_subscribeCoroutine);
                 _subscribeCoroutine = null;
             }
+            if (_camerasReadyCoroutine != null)
+            {
+                StopCoroutine(_camerasReadyCoroutine);
+                _camerasReadyCoroutine = null;
+            }
+            // #716 A6: stopping the follow-up mid-window would otherwise leave the token
+            // closed with nothing left alive to reopen it.
+            SecurityRegistryReadyForRound = true;
             if (Config != null)
             {
                 Config.NightVisionParamsChanged -= OnNightVisionParamsChanged;
@@ -652,6 +797,7 @@ namespace Y4NGZCompany.Bootstrap
             Y4NGZPlayerAnimationBridge.Shutdown();
             CCTVVanillaMonitorButtons.Shutdown();
             CCTVMonitorFeedSync.Shutdown();
+            CctvDeviceCommands.Shutdown();
             CCTVOperatorStation.Shutdown();
             CCTVVanillaMonitorDisplay.Shutdown();
             CCTVFocusControlsOverlay.Shutdown();

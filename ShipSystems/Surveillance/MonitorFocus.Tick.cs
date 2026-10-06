@@ -46,6 +46,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void TickFrameCore()
         {
+            CctvDeviceCommandLine.Tick();
             TickEntryPoseSettle();
             EntryPerfMark("TickEntryPoseSettle.rest");
             if (_enterPerfLogPending && Time.frameCount > _enterPerfFrame)
@@ -474,23 +475,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static void RunFocusPerfStep(string stepName, Action action)
         {
             if (action == null) return;
-            if (!IsFocused)
-            {
-                action();
-                EntryPerfMark(stepName);
-                return;
-            }
-
-            long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-            try
-            {
-                action();
-            }
-            finally
-            {
-                FocusPerfProbe.RecordStep("MonitorFocus." + stepName, System.Diagnostics.Stopwatch.GetTimestamp() - startedAt);
-                EntryPerfMark(stepName);
-            }
+            action();
+            EntryPerfMark(stepName);
         }
 
     }

@@ -203,7 +203,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 tm.characterSize = PAGE_INDICATOR_FONT_SIZE;
                 tm.fontSize = 32;
                 tm.color = Color.white;
-                Font fallbackFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                Font fallbackFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
                 if (fallbackFont != null)
                 {
                     tm.font = fallbackFont;

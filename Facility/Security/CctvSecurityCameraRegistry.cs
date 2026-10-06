@@ -7,19 +7,26 @@ namespace Y4NGZCompany.Facility.Security
     public static class CctvSecurityCameraRegistry
     {
         private static readonly List<CctvSecurityCameraState> Cameras = new List<CctvSecurityCameraState>();
+        // #1271: Find runs per camera per frame (sweep motor, detection indicator, lens
+        // blinker), so a linear scan was O(n^2) per frame. Keyed by the component's
+        // instance ID, the same identity Unity's == compares for two live objects; the
+        // first registration of a component wins, matching the old first-match scan.
+        // Every write to Cameras goes through Clear/AddCamera below so the two stay equal.
+        private static readonly Dictionary<int, CctvSecurityCameraState> CamerasByInstanceId =
+            new Dictionary<int, CctvSecurityCameraState>();
 
         public static IReadOnlyList<CctvSecurityCameraState> RegisteredCameras => Cameras;
 
         public static void ResetRound()
         {
-            Cameras.Clear();
+            ClearCameras();
             CctvSecurityDirector.OnCamerasRegistered(Cameras);
         }
 
         public static void RegisterCameras(IEnumerable<Component> cameras)
         {
             var previous = new List<CctvSecurityCameraState>(Cameras);
-            Cameras.Clear();
+            ClearCameras();
             if (cameras == null)
             {
                 CctvSecurityDirector.OnCamerasRegistered(Cameras);
@@ -33,7 +40,7 @@ namespace Y4NGZCompany.Facility.Security
                 string label = ReadStringProperty(component, "ResolvedLabel", $"CAM_{index:D2}");
                 var state = new CctvSecurityCameraState(index, component, component.transform, label);
                 CopyRuntimeState(FindPreviousState(previous, component, index), state);
-                Cameras.Add(state);
+                AddCamera(state);
             }
 
             CctvSecurityDirector.OnCamerasRegistered(Cameras);
@@ -50,7 +57,7 @@ namespace Y4NGZCompany.Facility.Security
             }
 
             string label = ReadStringProperty(camera, "ResolvedLabel", $"CAM_{index:D2}");
-            Cameras.Add(new CctvSecurityCameraState(index, camera, camera.transform, label));
+            AddCamera(new CctvSecurityCameraState(index, camera, camera.transform, label));
             CctvSecurityDirector.OnCamerasRegistered(Cameras);
         }
 
@@ -94,10 +101,23 @@ namespace Y4NGZCompany.Facility.Security
         public static CctvSecurityCameraState Find(Component camera)
         {
             if (camera == null) return null;
-            for (int i = 0; i < Cameras.Count; i++)
-                if (Cameras[i].CameraComponent == camera)
-                    return Cameras[i];
-            return null;
+            return CamerasByInstanceId.TryGetValue(camera.GetInstanceID(), out CctvSecurityCameraState state)
+                ? state
+                : null;
+        }
+
+        private static void ClearCameras()
+        {
+            Cameras.Clear();
+            CamerasByInstanceId.Clear();
+        }
+
+        private static void AddCamera(CctvSecurityCameraState state)
+        {
+            Cameras.Add(state);
+            int id = state.CameraComponent.GetInstanceID();
+            if (!CamerasByInstanceId.ContainsKey(id))
+                CamerasByInstanceId.Add(id, state);
         }
 
         private static CctvSecurityCameraState FindPreviousState(

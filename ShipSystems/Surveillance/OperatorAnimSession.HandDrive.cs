@@ -15,14 +15,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private bool IsRightHandActionPressWindowActive()
         {
-            return Time.unscaledTime <= _buttonPressLayerUntil &&
+            return _buttonPressLayerUntil > 0f && Time.unscaledTime < _buttonPressLayerUntil &&
                 (Y4NGZPlayerAnimationBridge.IsBlueRightHandAction(_buttonPressActionId) ||
                  Y4NGZPlayerAnimationBridge.IsGreenRightHandAction(_buttonPressActionId));
         }
 
-        private void ApplyFirstPersonRightHandTuning()
+        private void ApplyFirstPersonRightHandTuning(bool allowInteractionsApi = false)
         {
-            if (!_isLocal || !_controllerApplied || !ShouldShowFirstPersonArmsLayer())
+            if (!_isLocal || (!_controllerApplied && !allowInteractionsApi) ||
+                (!allowInteractionsApi && !ShouldShowFirstPersonArmsLayer()))
                 return;
             if (Time.unscaledTime > _buttonPressLayerUntil)
                 return;
@@ -110,6 +111,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
 
             float t = Mathf.Max(0f, Time.unscaledTime - _handDriveEnterStartedAt);
+            if (_isLocal && MonitorFocus.EnterPresentationClockSeconds >= 0f)
+                t = CctvIntroTiming.ClipSeconds(MonitorFocus.EnterPresentationClockSeconds, HandEnterSettleEndSeconds);
             if (!TryResolveCurrentHandRestPoses(
                     out Vector3 loweredLeftPosition,
                     out Quaternion loweredLeftRotation,

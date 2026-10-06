@@ -23,41 +23,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private static void UpdateCameraScanOverlay()
         {
-            if (_scanLabels == null) return;
-            bool hasContext = _contextTarget != null && Time.unscaledTime <= _contextTarget.ExpiresAt;
-            if (!IsFocused || (Time.unscaledTime > _scanVisibleUntil && !hasContext))
-            {
-                HideCameraScanOverlay();
-                return;
-            }
-
-            CCTVCamera active = GetActiveCamera();
-            Camera cam = active != null ? active.Cam : null;
-            if (cam == null)
-            {
-                HideScanLabels();
-                return;
-            }
-
-            Vector2 paneCenter = GetOverlayPaneCenter(ActiveSlot);
-            Vector2 paneSize = GetOverlayPaneSize(ActiveSlot);
-            if (_scanStatusText != null)
-            {
-                RectTransform statusRect = _scanStatusText.rectTransform;
-                statusRect.anchoredPosition = new Vector2(paneCenter.x, paneCenter.y - paneSize.y * 0.5f + 24f);
-            }
-
-            int labelIndex = 0;
-            if (hasContext && labelIndex < _scanLabels.Length)
-            {
-                UpdateContextLabel(_scanLabels[labelIndex], _contextTarget, cam, paneCenter);
-                labelIndex++;
-            }
-
-            for (int i = labelIndex; i < _scanLabels.Length; i++)
-            {
-                SetScanLabelActive(_scanLabels[i], false);
-            }
+            // Target identity and reveal now have one owner, including occlusion/fade.
+            HideScanLabels();
         }
 
         private static void UpdateContextLabel(ScanLabel label, ContextTarget target, Camera cam, Vector2 paneCenter)

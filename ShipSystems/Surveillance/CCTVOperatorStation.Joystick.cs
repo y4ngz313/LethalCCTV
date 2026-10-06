@@ -13,6 +13,55 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 {
     internal static partial class CCTVOperatorStation
     {
+        private static bool _joystickSessionOwned;
+        private static PlayerControllerB _joystickSessionPlayer;
+        private static Animator _joystickAnimator;
+        private static bool _joystickAnimatorWasEnabled;
+
+        internal static void BeginJoystickSession(PlayerControllerB player)
+        {
+            if (_joystickSessionOwned && _joystickSessionPlayer == player) return;
+            ReleaseJoystickSession();
+            EnsureBrakeLeverControlRig();
+            if (_joystickTiltPivot == null) return;
+            // Capture the landed/start pose now, after vanilla has evaluated it.
+            CaptureJoystickTiltBasePose(_joystickTiltPivot);
+            if (_rightHandTarget != null && TryResolveJoystickGripCenter(_joystickTiltPivot, out Vector3 grip, out string source))
+            {
+                _rightHandTarget.position = grip;
+                _rightHandGripSource = source;
+            }
+            _joystickAnimator = ResolveStartMatchLever()?.leverAnimatorObject;
+            if (_joystickAnimator != null)
+            {
+                _joystickAnimatorWasEnabled = _joystickAnimator.enabled;
+                _joystickAnimator.enabled = false;
+            }
+            _joystickSessionOwned = true;
+            _joystickSessionPlayer = player;
+        }
+
+        internal static void ReleaseJoystickSession(PlayerControllerB player)
+        {
+            if (_joystickSessionPlayer == player) ReleaseJoystickSession();
+        }
+
+        internal static void ApplySessionJoystick(PlayerControllerB player, Vector2 deflection)
+        {
+            if (_joystickSessionOwned && _joystickSessionPlayer == player) ApplyJoystickTiltPose(deflection);
+        }
+
+        private static void ReleaseJoystickSession()
+        {
+            if (!_joystickSessionOwned) return;
+            if (_joystickTiltPivot != null) _joystickTiltPivot.localRotation = _joystickTiltBaseLocalRotation;
+            if (_joystickAnimator != null) _joystickAnimator.enabled = _joystickAnimatorWasEnabled;
+            _joystickAnimator = null;
+            _joystickSessionOwned = false;
+            _joystickSessionPlayer = null;
+            _joystickPhase.Reset();
+        }
+
         private static void ResetJoystickMotionTarget(bool immediate = false)
         {
             if (immediate)
@@ -24,7 +73,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void UpdateJoystickMotion(bool force = false)
         {
-            if (_joystickTiltPivot == null)
+            if (_joystickTiltPivot == null || !_joystickSessionOwned)
                 return;
 
             bool idle = !_joystickCameraControlActive
@@ -37,14 +86,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             Vector2 joystick = _joystickPhase.Tick(Mathf.Max(Time.unscaledDeltaTime, 1f / 240f));
 
-            // The tilt pivot is StartMatchLever.leverAnimatorObject's transform.
-            // Writing it every LateUpdate pins the throttle to the cached neutral
-            // pose and visually cancels the vanilla ship start/land pull
-            // animation. Once the operator stops steering and the stick has
-            // decayed to rest, stop writing so the vanilla Animator owns it.
-            if ((idle || force) && joystick.sqrMagnitude <= JoystickRestEpsilonSqr)
-                return;
-
+            // CCTV owns the settled neutral only during this session. Releasing
+            // the session restores the vanilla ship start/land animator.
             ApplyJoystickTiltPose(joystick);
         }
 
@@ -311,6 +354,18 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (pivot == null)
                 return false;
 
+            // The vanilla lever's second submesh is the handle. Its bounds stay
+            // readable even when CPU access to the vertex buffer is disabled.
+            foreach (MeshFilter filter in pivot.GetComponentsInChildren<MeshFilter>(true))
+            {
+                Mesh mesh = filter.sharedMesh;
+                if (mesh == null || mesh.subMeshCount < 2 ||
+                    mesh.name.IndexOf("HangarDoorLever", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (!CctvControlGeometry.TryLeverHandleTop(filter.transform, mesh, out gripCenter)) continue;
+                source = "handle-submesh:" + GetPath(filter.transform);
+                return true;
+            }
+
             Vector3 neutralAxis = pivot.rotation * _joystickTiltNeutralLocalAxis;
             if (neutralAxis.sqrMagnitude < 0.0001f)
                 neutralAxis = pivot.up;
@@ -404,7 +459,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
 
             bestScore = score;
-            bestPoint = bounds.center;
+            bestPoint = bounds.center + Vector3.up * bounds.extents.y;
             bestSource = $"{kind}:{GetPath(candidateTransform)}";
         }
 

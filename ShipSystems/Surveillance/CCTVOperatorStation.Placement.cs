@@ -64,6 +64,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             StationPlacementRecord record = new StationPlacementRecord
             {
                 target = normalized,
+                presentationVersion = 2,
                 localPosition = target.localPosition,
                 localEuler = target.localEulerAngles,
                 localScale = NormalizePlacementScale(target.localScale)
@@ -101,6 +102,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     return new StationPlacementRecord
                     {
                         target = "focus",
+                        presentationVersion = 2,
                         localPosition = FocusLocalPosition,
                         localEuler = FocusLocalEuler,
                         localScale = Vector3.one
@@ -332,6 +334,19 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             target.localPosition = record.localPosition;
             target.localRotation = Quaternion.Euler(record.localEuler);
             target.localScale = NormalizePlacementScale(record.localScale);
+            if (NormalizePlacementTarget(record.target) == "focus" && record.presentationVersion < 2)
+            {
+                Vector3 eye = target.position;
+                Quaternion rotation = target.rotation;
+                MonitorFocus.ApplyLegacyFocusPresentationOffset(ref eye, ref rotation);
+                target.SetPositionAndRotation(eye, rotation);
+                // Upgrade in memory without changing the user's file on load.
+                // The next explicit save writes the effective eye as version 2,
+                // so editing/saving an old profile cannot drop its old offset.
+                record.localPosition = target.localPosition;
+                record.localEuler = target.localEulerAngles;
+                record.presentationVersion = 2;
+            }
         }
 
         private static bool HasSavedPlacement(string targetName)
@@ -596,6 +611,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 profile.placements.Add(new StationPlacementRecord
                 {
                     target = entry.GetString("target"),
+                    presentationVersion = entry.GetInt("presentationVersion", 0),
                     localPosition = entry.GetVector3("localPosition"),
                     localEuler = entry.GetVector3("localEuler"),
                     localScale = entry.GetVector3("localScale", Vector3.one)
@@ -619,6 +635,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
                     Core.Y4NGZJsonObject entry = placements.AddObject();
                     entry.SetString("target", record.target);
+                    entry.SetInt("presentationVersion", record.presentationVersion);
                     entry.SetVector3("localPosition", record.localPosition);
                     entry.SetVector3("localEuler", record.localEuler);
                     entry.SetVector3("localScale", record.localScale);
@@ -709,6 +726,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         internal sealed class StationPlacementRecord
         {
             public string target;
+            public int presentationVersion;
             public Vector3 localPosition;
             public Vector3 localEuler;
             public Vector3 localScale;

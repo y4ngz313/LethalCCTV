@@ -1594,8 +1594,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         {
             if (floorYs == null || floorYs.Count == 0)
                 return 0;
-            if (!TryResolveInteriorMainEntranceY(out float entranceY))
+            EntranceTeleport entrance = CctvTargetRegistry.FindInteriorMainEntrance();
+            if (entrance == null)
                 return 0;
+            float entranceY = (entrance.entrancePoint != null ? entrance.entrancePoint : entrance.transform).position.y;
 
             int best = 0;
             float bestDiff = Mathf.Abs(floorYs[0] - entranceY);
@@ -1610,38 +1612,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
 
             return best;
-        }
-
-        private static bool TryResolveInteriorMainEntranceY(out float y)
-        {
-            EntranceTeleport[] entrances = UnityEngine.Object.FindObjectsByType<EntranceTeleport>(
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None);
-
-            EntranceTeleport best = null;
-            for (int i = 0; i < entrances.Length; i++)
-            {
-                EntranceTeleport entrance = entrances[i];
-                if (entrance == null || entrance.isEntranceToBuilding)
-                    continue;
-
-                if (best == null || entrance.entranceId == 0)
-                {
-                    best = entrance;
-                    if (entrance.entranceId == 0)
-                        break;
-                }
-            }
-
-            if (best != null)
-            {
-                Transform entrancePoint = best.entrancePoint != null ? best.entrancePoint : best.transform;
-                y = entrancePoint.position.y;
-                return true;
-            }
-
-            y = 0f;
-            return false;
         }
 
         private static string FormatFloorLabel(int floorRank)

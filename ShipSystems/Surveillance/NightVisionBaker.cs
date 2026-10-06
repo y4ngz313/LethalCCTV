@@ -1,8 +1,11 @@
+using System;
 using System.Collections.Generic;
 using Y4NGZCompany.Facility.Cameras;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.ShipSystems.Rendering;
+using Y4NGZCore.Diagnostics;
 
 namespace Y4NGZCompany.ShipSystems.Surveillance
 {
@@ -21,30 +24,70 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     /// </summary>
     internal static class NightVisionBaker
     {
-        // AGC (#569): the CCTV cameras render with ExposureControl and Postprocess
-        // stripped, so a lit vanilla interior arrives near-clipped in the raw RT
-        // and a fixed 2.0x gain turns it solid white. Each slot therefore measures
-        // its raw feed's average luminance on a slow cadence (async GPU readback of
-        // an 8x8 downsample) and scales the gain toward a mid-gray target, clamped
-        // to [MIN, configured gain]: dim interiors keep the full configured boost,
-        // lit interiors attenuate below 1.0 instead of clipping.
         private const float AgcSampleIntervalSeconds = 0.5f;
-        private const float AgcTargetLinearLuma = 0.18f;
-        private const float AgcMinGain = 0.35f;
-        private const float AgcSmoothing = 0.35f;
-        private const int AgcProbeSize = 8;
+        private const int AgcProbeSize = 16;
+
+        /// <summary>Source renders of a feed, after an overlay effect starts on it, that FeedGuard meters.</summary>
+        internal const int FeedGuardSourceRenders = 2;
+
+        /// <summary>A composited feed whose meter falls below this fraction of the expected level has collapsed…</summary>
+        internal const float FeedGuardCollapseFraction = 0.25f;
+
+        /// <summary>…provided it is also below this absolute linear level, so a genuinely dark room never trips.</summary>
+        internal const float FeedGuardAbsoluteCeiling = 0.02f;
 
         private sealed class AgcState
         {
-            public float Gain = 1f;
+            public readonly CctvExposure Exposure = new CctvExposure();
             public float NextSampleAt;
+            public float LastBakeAt;
             public bool RequestPending;
+            public bool HasMeterSample;
+            public readonly float[] Luminance = new float[AgcProbeSize * AgcProbeSize];
+            public readonly Action<AsyncGPUReadbackRequest> Completed;
+
+            // FeedGuard (#1219 G3): the overlay start this slot last saw, the lease it armed on, the
+            // source renders left to meter, the level the composite should read, and one sample per
+            // metered render so both can be in flight at once.
+            public int ObservedOverlayGeneration;
+            public CameraRenderLease GuardLease;
+            public int GuardRendersRemaining;
+            public float GuardExpected;
+            public readonly List<GuardSample> GuardSamples = new List<GuardSample>(2) { new GuardSample(), new GuardSample() };
+
+            public AgcState()
+            {
+                Completed = request => CompleteAgcSample(this, request);
+            }
+        }
+
+        /// <summary>
+        /// One FeedGuard readback of a composited feed. The lease, source frame and render index are
+        /// captured when the sample is requested, so a readback that completes frames later is judged
+        /// against the frame it measured, not the frame it arrived on.
+        /// </summary>
+        private sealed class GuardSample
+        {
+            public readonly CctvExposure Meter = new CctvExposure();
+            public readonly float[] Luminance = new float[AgcProbeSize * AgcProbeSize];
+            public readonly Action<AsyncGPUReadbackRequest> Completed;
+            public bool Pending;
+            public CameraRenderLease Lease;
+            public int SourceFrame;
+            public int SourceRender;
+            public float Expected;
+
+            public GuardSample()
+            {
+                Completed = request => CompleteGuardSample(this, request);
+            }
         }
 
         private static bool _subscribed;
         private static Material _bakeMat;
         private static readonly Dictionary<Camera, int> _camToSlot = new Dictionary<Camera, int>(4);
         private static readonly Dictionary<int, AgcState> _agcBySlot = new Dictionary<int, AgcState>(4);
+        private static readonly HashSet<string> _feedGuardLogged = new HashSet<string>(StringComparer.Ordinal);
         private static RenderTexture _agcProbeRT;
         private static CCTVCamera _activeFillLightHolder;
 
@@ -53,34 +96,33 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         /// <summary>
         /// One-shot start. Loads the shader bundle (via NightVisionShader.TryLoad),
-        /// creates the shared bake Material, and subscribes the bake handler to
-        /// endCameraRendering. Returns true on success; returns false when the
-        /// bundle is missing or the shader fails to load (caller must leave
-        /// RawRTs null and route cameras directly to the display RTs — graceful
-        /// fallback).
+        /// creates the shared bake Material, and subscribes the handler to
+        /// begin/endCameraRendering. Returns true when the bake is available.
+        /// Without the shader, the handler copies the raw source to the separate
+        /// display target before compositing overlays and running FeedGuard.
         /// </summary>
         internal static bool TryStart()
         {
             if (_subscribed) return _bakeMat != null;
 
             Shader sh = NightVisionShader.TryLoad();
-            if (sh == null)
+            if (sh != null)
             {
-                // TryLoad already logged the remediation. Caller falls through to raw path.
-                return false;
+                _bakeMat = new Material(sh)
+                {
+                    name = "LethalCCTV_NightVisionBakeMat",
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
             }
-
-            _bakeMat = new Material(sh)
-            {
-                name = "LethalCCTV_NightVisionBakeMat",
-                hideFlags = HideFlags.HideAndDontSave,
-            };
+            // else: TryLoad already logged the remediation; feeds take the raw path.
 
             RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
             RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
             _subscribed = true;
-            SurveillanceBootstrap.Log.LogInfo("[LethalCCTV][NightVisionBaker] Subscribed to RenderPipelineManager begin/end camera rendering; bake material allocated.");
-            return true;
+            SurveillanceBootstrap.Log.LogInfo(_bakeMat != null
+                ? "[LethalCCTV][NightVisionBaker] Subscribed to RenderPipelineManager begin/end camera rendering; bake material allocated."
+                : "[LethalCCTV][NightVisionBaker] Subscribed without a bake material; raw source copies and overlays use separate display targets.");
+            return _bakeMat != null;
         }
 
         /// <summary>
@@ -114,9 +156,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static void OnBeginCameraRendering(ScriptableRenderContext _, Camera cam)
         {
             DisableActiveFillLight();
-            if (cam == null) return;
+            // The fill light belongs to the night-vision bake; the raw path never lit it.
+            if (cam == null || _bakeMat == null) return;
             if (!_camToSlot.ContainsKey(cam)) return;
-
             CCTVCamera holder = cam.GetComponent<CCTVCamera>();
             if (holder == null) return;
             holder.SetNightVisionFillLightActive(true);
@@ -126,12 +168,14 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         /// <summary>
         /// Register a CCTV camera under its slot index. Called from BindCameraToSlot
         /// immediately after cam.targetTexture is set so the next endCameraRendering
-        /// fire bakes the correct slot. Silent no-op when the baker is inactive
-        /// (bundle missing), so callers do not need to guard.
+        /// fire bakes (or, on the raw path, overlays) the correct slot. Silent no-op
+        /// before TryStart, so callers do not need to guard.
         /// </summary>
         internal static void Register(Camera cam, int slot)
         {
-            if (!IsActive || cam == null) return;
+            if (!_subscribed || cam == null) return;
+            if (!_camToSlot.TryGetValue(cam, out int previous) || previous != slot)
+                _agcBySlot.Remove(slot);
             _camToSlot[cam] = slot;
         }
 
@@ -172,16 +216,25 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             {
                 if (cam == null) return;
                 if (!_camToSlot.TryGetValue(cam, out int slot)) return;
-                if (_bakeMat == null) return;
+
+                RenderTexture[] disp = QuadMonitor.QuadRTs;
+                if (disp == null || slot < 0 || slot >= disp.Length) return;
+                RenderTexture dst = disp[slot];
+                if (dst == null) return;
 
                 RenderTexture[] raw = QuadMonitor.RawRTs;
-                RenderTexture[] disp = QuadMonitor.QuadRTs;
-                if (raw == null || disp == null) return;
-                if (slot < 0 || slot >= raw.Length || slot >= disp.Length) return;
-
-                RenderTexture src = raw[slot];
-                RenderTexture dst = disp[slot];
-                if (src == null || dst == null) return;
+                RenderTexture src = raw != null && slot < raw.Length ? raw[slot] : null;
+                if (src == null) return;
+                if (_bakeMat == null)
+                {
+                    // The display must not also be HDRP's camera target: its final
+                    // write can land after this callback and erase the overlay.
+                    AgcState rawState = ResolveExposure(slot, src);
+                    Graphics.Blit(src, dst);
+                    OutlineEffect.OutlineEffect.CompositeFeedOverlay(cam, dst);
+                    GuardFeed(cam, rawState, dst, 1f);
+                    return;
+                }
 
                 // Graphics.Blit auto-binds `src` to the material's _MainTex and drives
                 // blit UVs against it — the shader samples _MainTex.
@@ -190,12 +243,29 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 // bundle the write is skipped rather than logged or thrown. The
                 // gain is resolved unconditionally so the AGC readback keeps
                 // ticking regardless of which bundle is loaded.
-                float gain = ResolveGain(slot, src);
+                AgcState state = ResolveExposure(slot, src);
+                float gain = state.Exposure.Gain;
+                LethalCCTVConfig cfg = SurveillanceBootstrap.Config;
+                bool nightVision = cfg == null || cfg.NightVisionEnabled.Value;
+                float lowLight = nightVision ? state.Exposure.NightBlend : 0f;
+                float retention = Mathf.Lerp(1f, cfg?.FeedColorRetention.Value ?? 0.08f, lowLight);
+                if (_bakeMat.HasProperty(NightVisionShader.NightVisionBlendPropertyId))
+                    _bakeMat.SetFloat(NightVisionShader.NightVisionBlendPropertyId, lowLight);
+                if (_bakeMat.HasProperty(NightVisionShader.GrayscaleEnabledPropertyId))
+                    _bakeMat.SetFloat(NightVisionShader.GrayscaleEnabledPropertyId, nightVision ? 1f : 0f);
+                if (_bakeMat.HasProperty(NightVisionShader.ColorRetentionPropertyId))
+                    _bakeMat.SetFloat(NightVisionShader.ColorRetentionPropertyId, retention);
                 if (_bakeMat.HasProperty(NightVisionShader.VhsPhasePropertyId))
                     _bakeMat.SetFloat(NightVisionShader.VhsPhasePropertyId, Time.unscaledTime);
                 if (_bakeMat.HasProperty(NightVisionShader.GainPropertyId))
                     _bakeMat.SetFloat(NightVisionShader.GainPropertyId, gain);
                 Graphics.Blit(src, dst, _bakeMat, 0);
+
+                // #1219 G1: the squad-ping outline is an overlay on the baked image, drawn with the
+                // feed camera's matrices outside HDRP. The raw render and its frame settings are
+                // never touched, so a ping cannot black out the background.
+                OutlineEffect.OutlineEffect.CompositeFeedOverlay(cam, dst);
+                GuardFeed(cam, state, dst, gain);
             }
             finally
             {
@@ -212,82 +282,178 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
         }
 
-        /// <summary>
-        /// Per-slot effective gain for this bake. With auto-gain off (or async GPU
-        /// readback unsupported) this is the configured gain, i.e. the pre-1.0
-        /// behavior. With it on, the configured gain becomes the CEILING and the
-        /// slot's measured average luminance steers the actual value.
-        /// </summary>
-        private static float ResolveGain(int slot, RenderTexture src)
+        private static AgcState ResolveExposure(int slot, RenderTexture src)
         {
             LethalCCTVConfig cfg = SurveillanceBootstrap.Config;
-            float configGain = cfg != null ? cfg.NightVisionGain.Value : 2.0f;
-            bool auto = cfg == null || cfg.NightVisionAutoGain.Value;
-            if (!auto || !SystemInfo.supportsAsyncGPUReadback)
-                return configGain;
-
             if (!_agcBySlot.TryGetValue(slot, out AgcState state))
             {
-                state = new AgcState { Gain = Mathf.Min(configGain, 1f) };
+                state = new AgcState { LastBakeAt = Time.unscaledTime };
                 _agcBySlot[slot] = state;
             }
-
-            if (!state.RequestPending && Time.unscaledTime >= state.NextSampleAt)
+            if (!state.RequestPending && Time.unscaledTime >= state.NextSampleAt &&
+                SystemInfo.supportsAsyncGPUReadback)
             {
                 state.RequestPending = true;
                 state.NextSampleAt = Time.unscaledTime + AgcSampleIntervalSeconds;
-                SampleAverageLuma(src, state, configGain);
+                SampleLuminance(src, state);
             }
-
-            return Mathf.Clamp(state.Gain, AgcMinGain, configGain);
+            float now = Time.unscaledTime;
+            state.Exposure.Tick(now - state.LastBakeAt, cfg?.NightVisionGain.Value ?? 4f,
+                cfg == null || cfg.NightVisionEnabled.Value,
+                SystemInfo.supportsAsyncGPUReadback && (cfg == null || cfg.NightVisionAutomaticLowLight.Value),
+                SystemInfo.supportsAsyncGPUReadback && (cfg == null || cfg.NightVisionAutoGain.Value));
+            state.LastBakeAt = now;
+            return state;
         }
 
-        private static void SampleAverageLuma(RenderTexture src, AgcState state, float configGain)
+        private static RenderTexture EnsureProbe()
+        {
+            if (_agcProbeRT == null)
+            {
+                var format = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
+                    ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32;
+                _agcProbeRT = new RenderTexture(AgcProbeSize, AgcProbeSize, 0, format, RenderTextureReadWrite.Linear)
+                {
+                    name = "LethalCCTV_NightVisionAgcProbe",
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
+                _agcProbeRT.Create();
+            }
+            return _agcProbeRT;
+        }
+
+        private static void SampleLuminance(RenderTexture src, AgcState state)
         {
             try
             {
-                if (_agcProbeRT == null)
+                // Explicitly linear probe and float readback: no guessed sRGB decode. A readback
+                // captures the probe at request time, so AGC and guard samples can share it.
+                RenderTexture probe = EnsureProbe();
+                Graphics.Blit(src, probe);
+                AsyncGPUReadback.Request(probe, 0, TextureFormat.RGBAFloat, state.Completed);
+            }
+            catch { state.RequestPending = false; }
+        }
+
+        private static void CompleteAgcSample(AgcState state, AsyncGPUReadbackRequest request)
+        {
+            state.RequestPending = false;
+            if (!ReadLuminance(request, state.Luminance)) return;
+            state.Exposure.Measure(state.Luminance);
+            state.HasMeterSample = true;
+        }
+
+        private static bool ReadLuminance(AsyncGPUReadbackRequest request, float[] luminance)
+        {
+            if (request.hasError) return false;
+            var pixels = request.GetData<Color>();
+            if (pixels.Length != luminance.Length) return false;
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                Color p = pixels[i];
+                luminance[i] = Mathf.Max(0f, 0.2126f * p.r + 0.7152f * p.g + 0.0722f * p.b);
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// FeedGuard (#1219 G3). Feed cameras refuse settings leases, so every effect on a feed is an
+        /// overlay lease, and each one that starts is seen here as a new
+        /// <see cref="CameraRenderProfile.OverlayGeneration"/>. The next
+        /// <see cref="FeedGuardSourceRenders"/> renders of that feed are metered after the composite
+        /// with the AGC meter; a collapse revokes the lease (suppressing the effect on this feed until
+        /// it is rebound) and logs once per effect.
+        /// </summary>
+        private static void GuardFeed(Camera cam, AgcState state, RenderTexture composited, float gain)
+        {
+            int generation = CameraRenderProfile.OverlayGeneration(cam);
+            if (generation != state.ObservedOverlayGeneration)
+            {
+                state.ObservedOverlayGeneration = generation;
+                CameraRenderLease started = CameraRenderProfile.NewestOverlay(cam);
+                // The exposure initializer is not an observed pre-effect baseline. On a new
+                // binding, a naturally dark first frame must not permanently suppress the effect.
+                if (started != null && state.HasMeterSample)
                 {
-                    _agcProbeRT = new RenderTexture(AgcProbeSize, AgcProbeSize, 0, RenderTextureFormat.ARGB32)
-                    {
-                        name = "LethalCCTV_NightVisionAgcProbe",
-                        hideFlags = HideFlags.HideAndDontSave,
-                    };
-                    _agcProbeRT.Create();
+                    state.GuardLease = started;
+                    state.GuardRendersRemaining = FeedGuardSourceRenders;
+                    // What the baked feed reads without the effect: the raw meter through the gain.
+                    state.GuardExpected = state.Exposure.Meter * gain;
                 }
+            }
 
-                // Plain blit (bilinear downsample); the readback copies the probe's
-                // contents at request time, so back-to-back slots sharing the probe
-                // cannot race each other's data.
-                Graphics.Blit(src, _agcProbeRT);
-                UnityEngine.Rendering.AsyncGPUReadback.Request(_agcProbeRT, 0, TextureFormat.RGBA32, request =>
-                {
-                    state.RequestPending = false;
-                    if (request.hasError) return;
-                    var pixels = request.GetData<Color32>();
-                    if (pixels.Length == 0) return;
+            if (state.GuardRendersRemaining <= 0) return;
+            CameraRenderLease lease = state.GuardLease;
+            if (lease == null || !lease.IsActive || !SystemInfo.supportsAsyncGPUReadback)
+            {
+                state.GuardRendersRemaining = 0;
+                state.GuardLease = null;
+                return;
+            }
 
-                    float sum = 0f;
-                    for (int i = 0; i < pixels.Length; i++)
-                    {
-                        Color32 p = pixels[i];
-                        float encoded = (0.299f * p.r + 0.587f * p.g + 0.114f * p.b) / 255f;
-                        // Approximate sRGB decode; the gain multiply happens in
-                        // linear space in the shader, so steer in linear too.
-                        sum += Mathf.Pow(encoded, 2.2f);
-                    }
-                    float averageLinear = sum / pixels.Length;
-                    float desired = Mathf.Clamp(
-                        AgcTargetLinearLuma / Mathf.Max(averageLinear, 0.001f),
-                        AgcMinGain,
-                        configGain);
-                    state.Gain = Mathf.Lerp(state.Gain, desired, AgcSmoothing);
-                });
+            int render = FeedGuardSourceRenders - state.GuardRendersRemaining + 1;
+            state.GuardRendersRemaining--;
+            if (state.GuardRendersRemaining == 0) state.GuardLease = null;
+
+            GuardSample sample = null;
+            for (int i = 0; i < state.GuardSamples.Count; i++)
+            {
+                if (state.GuardSamples[i].Pending) continue;
+                sample = state.GuardSamples[i];
+                break;
+            }
+            if (sample == null)
+            {
+                // Grow only for a new in-flight peak; retain every context so
+                // completed captures can serve later overlapping generations.
+                sample = new GuardSample();
+                state.GuardSamples.Add(sample);
+            }
+            try
+            {
+                sample.Pending = true;
+                sample.Lease = lease;
+                sample.SourceFrame = Time.frameCount;
+                sample.SourceRender = render;
+                sample.Expected = state.GuardExpected;
+                RenderTexture probe = EnsureProbe();
+                Graphics.Blit(composited, probe);
+                AsyncGPUReadback.Request(probe, 0, TextureFormat.RGBAFloat, sample.Completed);
             }
             catch
             {
-                state.RequestPending = false;
+                sample.Pending = false;
+                sample.Lease = null;
             }
+        }
+
+        private static void CompleteGuardSample(GuardSample sample, AsyncGPUReadbackRequest request)
+        {
+            sample.Pending = false;
+            CameraRenderLease lease = sample.Lease;
+            sample.Lease = null;
+            if (lease == null || !lease.IsActive || !ReadLuminance(request, sample.Luminance)) return;
+
+            sample.Meter.Measure(sample.Luminance);
+            float meter = sample.Meter.Meter;
+            if (!IsFeedCollapsed(meter, sample.Expected) || !CameraRenderProfile.Revoke(lease)) return;
+            if (!_feedGuardLogged.Add(lease.Effect)) return;
+
+            string cameraName = lease.Camera != null ? lease.Camera.name : "<destroyed>";
+            ModuleLog.ShipSystems.LogWarning(
+                $"[LethalCCTV][FeedGuard] effect={lease.Effect} meter={meter:F4} expected={sample.Expected:F4} " +
+                $"camera={cameraName} sampleFrame={sample.SourceFrame} render={sample.SourceRender}/{FeedGuardSourceRenders} " +
+                $"startFrame={lease.StartFrame}; effect revoked on this feed until it is rebound.");
+        }
+
+        /// <summary>
+        /// True when a composited feed's meter has collapsed: below
+        /// <see cref="FeedGuardCollapseFraction"/> of <paramref name="expectedMeter"/> and below
+        /// <see cref="FeedGuardAbsoluteCeiling"/>.
+        /// </summary>
+        internal static bool IsFeedCollapsed(float compositeMeter, float expectedMeter)
+        {
+            return compositeMeter < FeedGuardAbsoluteCeiling && compositeMeter < expectedMeter * FeedGuardCollapseFraction;
         }
     }
 }

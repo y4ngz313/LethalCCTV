@@ -49,7 +49,7 @@ namespace Y4NGZCompany.Facility.Security
         private const float AlarmVolumeScale = 0.85f;
         // #466: a further -20% on top of the above, for the same reason and by the same
         // route - the siren was still overbearing once alarms became frequent, and a
-        // constant reaches profiles that already store a hand-set AlarmAudioVolume.
+        // constant reaches profiles that already store a hand-set Wall Alarm Volume.
         private const float AlarmVolumeRebalance = 0.8f;
         // End-of-alarm ramp. The stop is allowed early at a loudness valley
         // (between beeps) once most of the ramp has elapsed, so the tail

@@ -32,9 +32,9 @@ namespace Y4NGZCompany.Facility.Cameras
 
         // Indoor-dungeon-scoped far clip. Unity's default is 1000m; nothing on a CCTV
         // feed needs to draw past the configured short indoor distance.
-        private const float DEFAULT_CCTV_FAR_CLIP_M = 40f;
+        private const float DEFAULT_CCTV_FAR_CLIP_M = 120f;
         private const float MIN_CCTV_FAR_CLIP_M = 4f;
-        private const float MAX_CCTV_FAR_CLIP_M = 100f;
+        private const float MAX_CCTV_FAR_CLIP_M = 250f;
         private const float FLOOR_GROUP_TOLERANCE_M = 7.5f;
 
         // Phase 1.6b — derived from Phase 1.6 D1 diagnostic. Player gameplay camera's
@@ -122,9 +122,9 @@ namespace Y4NGZCompany.Facility.Cameras
             SelectCameras(initialIndices);
             QuadMonitor.UpdatePageIndicator(CurrentPage, TotalPages);
 
-            // Freshen the RTs immediately so a dungeon transition does not leave
-            // the previous round's last frame on the wall for up to 1/15s while
-            // the throttle warms up. Cheap one-shot synchronous render — rare event.
+            // Freshen the RTs promptly so a dungeon transition does not leave the
+            // previous round's last frame on the wall while the throttle warms up.
+            // The snapshot is a CctvRenderScheduler request (#1219 G4).
             QuadMonitor.SetPhysicalDisplayBlanked(n == 0);
             // #305 — raster the radar map now (round-start load) instead of on the
             // first focus entry.
@@ -241,11 +241,10 @@ namespace Y4NGZCompany.Facility.Cameras
             CurrentPage = wrapped;
             SelectCameras(ComputePageIndices(wrapped));
             QuadMonitor.UpdatePageIndicator(CurrentPage, total);
-            // Phase 1.7b — synchronous one-shot render of the newly bound page so
-            // mid-focus paging never shows a previously-bound camera's last baked
-            // frame on the same-slot QuadRTs while waiting up to 1/15s for the next
-            // throttle tick. No double-fire with Assign's WakeRender (Assign calls
-            // SelectCameras directly, not GoToPage).
+            // Phase 1.7b — one-shot snapshot of the newly bound page so mid-focus
+            // paging never shows a previously-bound camera's last baked frame on the
+            // same-slot QuadRTs while waiting for the next throttle tick. Served by
+            // CctvRenderScheduler (#1219 G4); Assign requests the same snapshot.
             QuadMonitor.SetPhysicalDisplayBlanked(TotalCameraCount == 0);
             if (MonitorFocus.IsFocused)
             {
@@ -308,10 +307,8 @@ namespace Y4NGZCompany.Facility.Cameras
         /// per-throttle pending flag on every bound camera. The throttle consumes
         /// those requests over a short stagger, outside the render loop, by
         /// flipping cam.enabled = true so HDRP renders each camera on its own
-        /// pass. This is the SAFE-FROM-RENDER-LOOP entry point: any caller
-        /// running inside the HDRP render loop must use it. Synchronous
-        /// WakeRender (below) remains for the lifecycle/input-driven callers
-        /// (EnterFocus, Assign, GoToPage) where Camera.Render is safe.
+        /// pass. <see cref="WakeRender"/> is the other wake: a manual snapshot
+        /// served by CctvRenderScheduler.
         /// </summary>
         internal static void RequestWakeAllSlots()
         {
@@ -329,26 +326,33 @@ namespace Y4NGZCompany.Facility.Cameras
             if (throttle != null) throttle.RequestWake(delaySeconds);
         }
 
-        // One-shot synchronous render of every bound camera. Called from the
-        // SAFE-CONTEXT wake paths: MonitorFocus.EnterFocus (input handler),
-        // Assign (RoundManager lifecycle event), GoToPage (input handler).
-        // NEVER call this from inside the HDRP render loop — Camera.Render
-        // re-enters SRP and trips "Collection was modified" on HDRP's camera
-        // List enumeration. Render-loop callers MUST use RequestWakeAllSlots
-        // instead.
+        /// <summary>
+        /// Requests a one-shot manual render of the visible feed (#1219 G4). The render
+        /// itself runs in <see cref="CctvRenderScheduler.Pump"/> at the end of the
+        /// LateUpdate pass, outside the HDRP render loop, within the global
+        /// one-manual-render-per-frame budget. Callers: MonitorFocus input, Assign, GoToPage.
+        /// </summary>
         internal static void WakeRender()
         {
-            WakeRenderSlot(0);
+            CctvRenderScheduler.Request(
+                CctvRenderClient.FeedSnapshot,
+                CctvRenderScheduler.DirtyBypassMinIntervalSeconds,
+                bypassCadence: true);
         }
 
-        private static void WakeRenderSlot(int slot)
+        /// <summary>CctvRenderScheduler callback for <see cref="CctvRenderClient.FeedSnapshot"/>.</summary>
+        internal static bool RenderScheduledFeedSnapshot()
         {
-            if (slot < 0 || slot >= SLOT_COUNT) return;
-            CCTVCamera holder = _boundCameras[slot];
-            if (holder == null) return;
+            // Requested only while focused; a request still pending when focus exited is stale.
+            if (!MonitorFocus.IsFocused) return false;
+            CCTVCamera holder = _boundCameras[0];
+            if (holder == null) return false;
             Camera cam = holder.Cam;
-            if (cam == null) return;
-            if (cam.targetTexture == null) return;
+            if (cam == null) return false;
+            if (cam.targetTexture == null) return false;
+            // The throttle enabled this camera for the current frame, so HDRP renders a
+            // fresh frame anyway; a manual render on top would be a duplicate.
+            if (cam.enabled) return false;
             CCTVCameraVisual.HidePhysicalCameraRenderersForCctv();
             try
             {
@@ -358,6 +362,7 @@ namespace Y4NGZCompany.Facility.Cameras
             {
                 CCTVCameraVisual.RestorePhysicalCameraRenderersAfterCctv();
             }
+            return true;
         }
 
         /// <summary>
@@ -394,6 +399,7 @@ namespace Y4NGZCompany.Facility.Cameras
 
         internal static void Unassign()
         {
+            CctvRenderScheduler.Cancel(CctvRenderClient.FeedSnapshot);
             for (int slot = 0; slot < SLOT_COUNT; slot++)
             {
                 TearDownSlot(slot);
@@ -609,7 +615,9 @@ namespace Y4NGZCompany.Facility.Cameras
         private static int ResolveMainEntranceFloorGroupIndex(List<FloorCameraGroup> groups)
         {
             if (groups == null || groups.Count == 0) return 0;
-            if (!TryResolveInteriorMainEntranceY(out float entranceY)) return 0;
+            EntranceTeleport entrance = CctvTargetRegistry.FindInteriorMainEntrance();
+            if (entrance == null) return 0;
+            float entranceY = (entrance.entrancePoint != null ? entrance.entrancePoint : entrance.transform).position.y;
 
             int best = 0;
             float bestDiff = Mathf.Abs(groups[0].FloorY - entranceY);
@@ -621,35 +629,6 @@ namespace Y4NGZCompany.Facility.Cameras
                 bestDiff = diff;
             }
             return best;
-        }
-
-        private static bool TryResolveInteriorMainEntranceY(out float y)
-        {
-            EntranceTeleport[] entrances = UnityEngine.Object.FindObjectsByType<EntranceTeleport>(
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None);
-
-            EntranceTeleport best = null;
-            for (int i = 0; i < entrances.Length; i++)
-            {
-                EntranceTeleport entrance = entrances[i];
-                if (entrance == null || entrance.isEntranceToBuilding) continue;
-                if (best == null || entrance.entranceId == 0)
-                {
-                    best = entrance;
-                    if (entrance.entranceId == 0) break;
-                }
-            }
-
-            if (best != null)
-            {
-                Transform entrancePoint = best.entrancePoint != null ? best.entrancePoint : best.transform;
-                y = entrancePoint.position.y;
-                return true;
-            }
-
-            y = 0f;
-            return false;
         }
 
         private static int CompareFloorCameraGroups(FloorCameraGroup a, FloorCameraGroup b)
@@ -892,13 +871,9 @@ namespace Y4NGZCompany.Facility.Cameras
         {
             Camera cam = holder.Cam;
 
-            // Phase 1.7b — when the night-vision bake is active, the camera writes
-            // into RawRTs[slot]; the bake handler blits through the bake material
-            // into QuadRTs[slot]. When the bundle is missing (RawRTs == null), the
-            // camera writes directly into QuadRTs[slot] (raw passthrough).
-            cam.targetTexture = (QuadMonitor.RawRTs != null)
-                ? QuadMonitor.RawRTs[slot]
-                : QuadMonitor.QuadRTs[slot];
+            // Keep HDRP's camera target separate from the composited display even
+            // without the night-vision shader. The baker owns the display writes.
+            cam.targetTexture = QuadMonitor.RawRTs[slot];
 
             // Register the camera under its slot IMMEDIATELY after targetTexture is set
             // and BEFORE BindRTToSlot below flips the wall + overlay to QuadRTs[slot].
@@ -909,12 +884,13 @@ namespace Y4NGZCompany.Facility.Cameras
             NightVisionBaker.Register(cam, slot);
 
             cam.cullingMask = _cachedCullingMask;
+            cam.aspect = Placement.CameraPlacementSafety.Aspect;
             CCTVCameraVisual.RegisterCctvFeedCamera(cam);
             CctvTileCullingBypass.Register(cam, holder);
-            cam.farClipPlane = ResolveInteriorFarClipPlane();
+            cam.farClipPlane = Mathf.Max(ResolveInteriorFarClipPlane(), holder.SafetyEnvelope?.RequiredDistance ?? 0f);
             if (SurveillanceBootstrap.Config != null)
             {
-                cam.fieldOfView = SurveillanceBootstrap.Config.FieldOfView.Value;
+                cam.fieldOfView = Mathf.Min(SurveillanceBootstrap.Config.FieldOfView.Value, Placement.CameraPlacementSafety.VerticalFov);
             }
             cam.clearFlags = CameraClearFlags.Color;
             cam.backgroundColor = Color.black;
@@ -940,13 +916,11 @@ namespace Y4NGZCompany.Facility.Cameras
             hdrp.backgroundColorHDR = Color.black;
             holder.HdrpData = hdrp;
 
-            // FrameSettings strip — cuts the full-default HDRP cost (post-FX, motion
-            // blur, screen-space shadows/SSAO/SSR, reflections, volumetrics, decals,
-            // custom passes, exposure, SSS, refraction/distortion) for
-            // this camera's per-frame render. ApplyStripSet flips customRenderingSettings
-            // ON and sets the per-field override mask + values; RevertStripSet (called
-            // in TearDownSlot) flips customRenderingSettings OFF so the next bind
-            // starts clean. Both calls are idempotent via the StripActive flag.
+            // FrameSettings strip — ApplyStripSet classifies the camera as a Feed in
+            // Core's CameraRenderProfile, which applies the immutable CCTV strip set and
+            // refuses every settings lease on it; RevertStripSet (TearDownSlot) releases
+            // the profile, restoring the camera's captured baseline and ending feed
+            // overlays.
             holder.ApplyStripSet();
 
             // Phase 1.5a: re-point the slot's material to its canonical per-slot RT, in
@@ -963,6 +937,10 @@ namespace Y4NGZCompany.Facility.Cameras
             float maxFps = seatedStation ? SEATED_STATION_CAMERA_FPS_CAP : MAX_CAMERA_FPS;
             return Mathf.Clamp(configured, MIN_CAMERA_FPS, maxFps);
         }
+
+        /// <summary>Seconds between renders of the active feed at the configured rate;
+        /// also the turret view's cadence in CctvRenderScheduler.</summary>
+        internal static float ResolveActiveFeedIntervalSeconds() => 1f / ResolveCameraFps();
 
         private static float ResolveInactiveCameraFps()
         {

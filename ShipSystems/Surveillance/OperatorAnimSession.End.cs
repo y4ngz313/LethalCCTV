@@ -28,6 +28,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
             if (_interactionsApiMode)
             {
+                RestoreApiEnterAnimatorSpeed();
                 _active = false;
                 _windingDown = true;
                 _cameraControlActive = false;
@@ -182,6 +183,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal void EndImmediate(string reason)
         {
+            CCTVOperatorStation.ReleaseJoystickSession(Player);
             if (_interactionsApiMode)
             {
                 CompleteInteractionsApiSession(
@@ -193,6 +195,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return;
             }
 
+            RestoreOperatorPoseTargets();
             if (!_active && !_windingDown && _animator == null)
             {
                 RestoreRightArmPresentationScale("abort");
@@ -359,11 +362,21 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 $"currentController='{currentControllerName}'.");
         }
 
+        private void RestoreApiEnterAnimatorSpeed()
+        {
+            if (_apiEnterSpeedOwned && _animator != null)
+                _animator.speed = _apiSavedAnimatorSpeed;
+            _apiEnterSpeedOwned = false;
+        }
+
         private void CompleteInteractionsApiSession(
             string reason,
             bool requestStop,
             string stopReasonName)
         {
+            CCTVOperatorStation.ReleaseJoystickSession(Player);
+            RestoreApiEnterAnimatorSpeed();
+
             object handle = _interactionsApiHandle;
             PlayerControllerB sessionPlayer = Player;
             string rightArmRestoreReason = !requestStop && _windingDown
@@ -377,6 +390,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             // where an older Interactions DLL captured its scoped snapshot under
             // the collapse and replays scale≈0 during its own restore.
             RestoreRightArmPresentationScale(rightArmRestoreReason);
+            RestoreOperatorPoseTargets();
             bool stopSucceeded = !requestStop ||
                 CCTVOperatorInteractionsBridge.TryStop(handle, stopReasonName);
 
@@ -486,7 +500,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private void StartDirectOperatorIdlePose()
         {
-            if (_animator == null || !_controllerApplied)
+            if (_animator == null || (!_controllerApplied && !_interactionsApiMode))
                 return;
 
             PlayLayerState(_operatorFullBodyLayer, OperatorIdleStateHash, OperatorIdleShortStateHash);

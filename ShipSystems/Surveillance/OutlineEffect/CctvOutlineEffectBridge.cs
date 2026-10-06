@@ -14,7 +14,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
     internal enum CctvOutlineSource
     {
-        Cctv = 0
+        Cctv = 0,
+        SquadPing = 1
     }
 
     internal static class CctvOutlineEffectBridge
@@ -26,6 +27,55 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
         private static Camera _camera;
         private static OutlineEffect _effect;
         private static float _nextMissingShaderLogAt;
+        private static readonly HashSet<OutlineEffect> SquadEffects = new HashSet<OutlineEffect>();
+
+        /// <summary>
+        /// Puts the squad-ping outline on <paramref name="camera"/>. Writes no frame settings: the
+        /// effect takes its hold through Core's CameraRenderProfile, as a CustomPass lease on the
+        /// gameplay camera and as an overlay composited after the bake on a CCTV feed, whose strip
+        /// set stays untouched (#1219 G1/G2). Called every squad tick; allocation-free once set up.
+        /// </summary>
+        internal static void PrepareSquadCamera(Camera camera)
+        {
+            if (camera == null) return;
+            OutlineEffect effect = camera.GetComponent<OutlineEffect>();
+            if (effect == null) effect = camera.gameObject.AddComponent<OutlineEffect>();
+            if (!SquadEffects.Contains(effect) || !effect.enabled)
+            {
+                ConfigureEffect(effect, camera);
+                // Match Upgrades' Ping: danger red, utility cyan, friendly green.
+                effect.lineThickness = 0.85f;
+                effect.lineIntensity = 1.35f;
+                effect.lineColor0 = new Color(1f, 0.18f, 0.12f, 1f);
+                effect.lineColor1 = new Color(0.25f, 0.85f, 1f, 1f);
+                effect.lineColor2 = new Color(0.2f, 1f, 0.45f, 1f);
+                effect.UpdateMaterialsPublicProperties();
+            }
+            effect.SquadOnly = true;
+            SquadEffects.Add(effect);
+            effect.RefreshRenderOwnership();
+        }
+
+        internal static bool ShowSquadPing(Camera camera, GameObject root, CctvOutlineChannel channel, float duration)
+        {
+            if (root == null || camera == null || duration <= 0f) return false;
+            PrepareSquadCamera(camera);
+            CctvOutlineTarget driver = root.GetComponent<CctvOutlineTarget>() ?? root.AddComponent<CctvOutlineTarget>();
+            return driver.Show(camera, CctvOutlineSource.SquadPing, (int)channel, duration);
+        }
+
+        internal static void ClearSquadPing(GameObject root)
+        {
+            if (root != null) root.GetComponent<CctvOutlineTarget>()?.Clear(CctvOutlineSource.SquadPing);
+        }
+
+        internal static void ClearSquadCameras()
+        {
+            // Disabling the effect ends its lease; Core restores the camera's settings once the last
+            // holder of the bit lets go.
+            foreach (OutlineEffect effect in SquadEffects) if (effect != null) effect.enabled = false;
+            SquadEffects.Clear();
+        }
 
         internal static Camera ActiveCamera => _camera;
 
@@ -56,7 +106,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
         internal static void DisableActiveEffect()
         {
-            if (_effect != null && _effect.enabled)
+            if (_effect != null && _effect.enabled && !SquadEffects.Contains(_effect))
                 _effect.enabled = false;
         }
 
@@ -137,11 +187,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
             internal bool Show(Camera camera, CctvOutlineSource source, int channel, float duration)
             {
+                enabled = true;
                 _camera = camera;
                 _requests[source] = new OutlineRequest
                 {
                     Channel = channel,
-                    ExpiresAt = Time.time + duration
+                    ExpiresAt = Time.unscaledTime + duration
                 };
 
                 EnsureRenderers(camera);
@@ -154,7 +205,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                 _requests.Remove(source);
                 if (_requests.Count <= 0)
                 {
-                    Destroy(this);
+                    Suspend();
                     return;
                 }
 
@@ -167,7 +218,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                 List<CctvOutlineSource> expired = null;
                 foreach (KeyValuePair<CctvOutlineSource, OutlineRequest> pair in _requests)
                 {
-                    if (Time.time < pair.Value.ExpiresAt)
+                    if (Time.unscaledTime < pair.Value.ExpiresAt)
                         continue;
 
                     if (expired == null)
@@ -183,11 +234,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
                 if (_requests.Count <= 0)
                 {
-                    Destroy(this);
+                    Suspend();
                     return;
                 }
 
-                Camera activeCamera = ActiveCamera ?? _camera;
+                Camera activeCamera = _requests.ContainsKey(CctvOutlineSource.SquadPing) ? _camera : ActiveCamera ?? _camera;
                 EnsureRenderers(activeCamera);
                 if (expired != null)
                     ResolveActiveChannel();
@@ -350,7 +401,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
             private void TryTrackRenderer(Renderer renderer)
             {
-                if (renderer == null || !renderer.enabled)
+                if (renderer == null || (!renderer.enabled && !_requests.ContainsKey(CctvOutlineSource.SquadPing)))
                     return;
 
                 if (renderer is ParticleSystemRenderer || renderer is LineRenderer || renderer is TrailRenderer)
@@ -382,6 +433,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                 bool previousEnabled = false;
                 int previousColor = 0;
                 bool previousErase = false;
+                bool previousSquad = false;
 
                 if (outline == null)
                 {
@@ -392,6 +444,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                     previousEnabled = outline.enabled;
                     previousColor = outline.color;
                     previousErase = outline.eraseRenderer;
+                    previousSquad = outline.SquadHighlighted;
                 }
 
                 _records.Add(new OutlineRecord
@@ -401,7 +454,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                     Created = created,
                     PreviousEnabled = previousEnabled,
                     PreviousColor = previousColor,
-                    PreviousEraseRenderer = previousErase
+                    PreviousEraseRenderer = previousErase,
+                    PreviousSquadHighlighted = previousSquad
                 });
             }
 
@@ -618,6 +672,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
                     bool active = RendererBelongsToTarget(_records[i].Renderer);
                     outline.color = _channel;
+                    outline.SquadHighlighted = _requests.ContainsKey(CctvOutlineSource.SquadPing);
                     outline.eraseRenderer = false;
                     if (outline.enabled != active)
                         outline.enabled = active;
@@ -628,7 +683,17 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
                 return activeCount;
             }
 
-            private void OnDestroy()
+            private void Suspend()
+            {
+                // Reuse dormant components on the next ping. Destroy is deferred
+                // until end of frame and could otherwise erase a same-frame refresh.
+                enabled = false;
+                RestoreOutlines(destroyCreated: false);
+            }
+
+            private void OnDestroy() => RestoreOutlines(destroyCreated: true);
+
+            private void RestoreOutlines(bool destroyCreated)
             {
                 for (int i = 0; i < _records.Count; i++)
                 {
@@ -638,17 +703,20 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
 
                     if (record.Created)
                     {
-                        Destroy(record.Outline);
+                        record.Outline.enabled = false;
+                        record.Outline.SquadHighlighted = false;
+                        if (destroyCreated) Destroy(record.Outline);
                     }
                     else
                     {
                         record.Outline.color = record.PreviousColor;
                         record.Outline.eraseRenderer = record.PreviousEraseRenderer;
+                        record.Outline.SquadHighlighted = record.PreviousSquadHighlighted;
                         record.Outline.enabled = record.PreviousEnabled;
                     }
                 }
 
-                _records.Clear();
+                if (destroyCreated) _records.Clear();
             }
         }
 
@@ -666,6 +734,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance.OutlineEffect
             internal bool PreviousEnabled;
             internal int PreviousColor;
             internal bool PreviousEraseRenderer;
+            internal bool PreviousSquadHighlighted;
         }
     }
 }

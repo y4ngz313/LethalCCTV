@@ -19,6 +19,11 @@ namespace Y4NGZCompany.Core.Compat
     /// </summary>
     internal static class GameplayHudHostBridge
     {
+        // #660: the substrate lives in Y4NGZUI.dll now. Probe there first; fall back to the
+        // pre-move Contracted names so this build still bridges an older companion set.
+        private const string UiHostTypeName = "Y4NGZUI.GameplayHudHost";
+        private const string UiVisibilityTypeName = "Y4NGZUI.GameplayUiVisibility";
+
         private const string HostTypeName =
             "Y4NGZCompany.Experience.UITheme.GameplayHudHost";
 
@@ -134,7 +139,8 @@ namespace Y4NGZCompany.Core.Compat
 
             try
             {
-                Type hostType = CompanyAssemblyBridge.ResolveContractedType(HostTypeName);
+                Type hostType = CompanyAssemblyBridge.ResolveUiType(UiHostTypeName)
+                    ?? CompanyAssemblyBridge.ResolveContractedType(HostTypeName);
                 if (hostType != null)
                 {
                     _instanceProperty = hostType.GetProperty("Instance", StaticMembers);
@@ -142,7 +148,8 @@ namespace Y4NGZCompany.Core.Compat
                     _edgeAlertLayerProperty = hostType.GetProperty("EdgeAlertLayer", InstanceMembers);
                 }
 
-                Type visibilityType = CompanyAssemblyBridge.ResolveContractedType(VisibilityTypeName);
+                Type visibilityType = CompanyAssemblyBridge.ResolveUiType(UiVisibilityTypeName)
+                    ?? CompanyAssemblyBridge.ResolveContractedType(VisibilityTypeName);
                 if (visibilityType != null)
                     _isVisibleProperty = visibilityType.GetProperty("IsVisible", StaticMembers);
             }

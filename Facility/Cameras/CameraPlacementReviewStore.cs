@@ -39,6 +39,7 @@ namespace Y4NGZCompany.Facility.Cameras
         public const string Embedded = "embedded";
         public const string SurfaceContactLost = "surface-contact-lost";
         public const string SurfaceContactUnverifiable = "surface-contact-unverifiable";
+        public const string SurfaceFreeStanding = "surface-free-standing";
     }
 
     internal static class CameraPlacementReviewTags
@@ -118,17 +119,25 @@ namespace Y4NGZCompany.Facility.Cameras
         public readonly Quaternion WorldRotation;
         public readonly CameraPlacementReviewRecord Record;
         public readonly CameraReviewMetrics Metrics;
+        // World normal of the surface the pose was validated against, and the
+        // pose's distance from it along that normal (#1313).
+        public readonly Vector3 SurfaceNormal;
+        public readonly float SurfaceDistanceM;
 
         public ReviewedCameraPose(
             Vector3 worldPosition,
             Quaternion worldRotation,
             CameraPlacementReviewRecord record,
-            CameraReviewMetrics metrics)
+            CameraReviewMetrics metrics,
+            Vector3 surfaceNormal,
+            float surfaceDistanceM)
         {
             WorldPosition = worldPosition;
             WorldRotation = worldRotation;
             Record = record;
             Metrics = metrics;
+            SurfaceNormal = surfaceNormal;
+            SurfaceDistanceM = surfaceDistanceM;
         }
     }
 
@@ -216,15 +225,16 @@ namespace Y4NGZCompany.Facility.Cameras
         private const string ProfileFileName = "camera-placement-reviews.json";
         private const string LocalFolderName = Core.Y4NGZCompanyPaths.LocalDataDirName;
         private const string LocalFileName = "camera-placement-reviews.local.json";
-        private const float VoidProbeDistanceM = 40f;
+        private static float VoidProbeDistanceM => CameraPlacementSafety.ProbeDistance;
         private const float NearWallDistanceM = 2f;
 
         /// <summary>
-        /// Reach for the fallback mount probe used when a review record saved no surface normal.
-        /// Comfortably clears the offset between a mount point and its surface, while still
-        /// rejecting a pose sitting in open air in the middle of a room.
+        /// Reach of the surface-contact casts that verify a reviewed pose still sits on its mount
+        /// surface: along -normal when the record saved a normal, otherwise back and up (#1313).
         /// </summary>
-        private const float UnverifiedMountProbeRadius = 0.6f;
+        private const float ReviewedSurfaceProbeM = 0.75f;
+        // The saved-normal contact cast starts this far in front of the pose.
+        private const float ReviewedContactStandoffM = 0.05f;
 
         private static readonly Vector2[] FrustumOffsets =
         {
@@ -267,9 +277,9 @@ namespace Y4NGZCompany.Facility.Cameras
 
         /// <summary>
         /// A <c>Perfect</c> review with no saved <c>tileLocalSurfaceNormal</c> cannot have its
-        /// mount surface verified precisely, so it falls back to the proximity probe in
-        /// <see cref="ReviewedPoseStillValid"/>. Worth reporting once at load: these records are
-        /// the ones that can place a camera badly, and re-reviewing them fixes the data at source.
+        /// mount surface verified from the record, so <see cref="ReviewedPoseStillValid"/> searches
+        /// behind and above the pose and requires a structural patch there. Worth reporting once at
+        /// load: re-reviewing these records saves a normal and fixes the data at source.
         /// </summary>
         private static void WarnAboutUnverifiablePerfectReviews()
         {
@@ -286,7 +296,7 @@ namespace Y4NGZCompany.Facility.Cameras
             if (missingNormal <= 0) return;
 
             SurveillanceBootstrap.Log?.LogWarning(
-                $"[Y4NGZ.PlacementReview] REVIEW_NO_SURFACE_NORMAL {missingNormal}/{perfect} Perfect reviews saved no tileLocalSurfaceNormal; their mount surface cannot be verified precisely and they fall back to a {UnverifiedMountProbeRadius:F2}m proximity probe. Re-review those cameras to record a normal.");
+                $"[Y4NGZ.PlacementReview] REVIEW_NO_SURFACE_NORMAL {missingNormal}/{perfect} Perfect reviews saved no tileLocalSurfaceNormal; their mount surface is searched behind and above the pose and must pass the structural-patch test. Re-review those cameras to record a normal.");
         }
 
         /// <summary>
@@ -519,7 +529,10 @@ namespace Y4NGZCompany.Facility.Cameras
                 companyStashRejectCount);
         }
 
-        internal static bool TryResolveReviewedPose(Tile tile, PlacementMasks masks, out ReviewedCameraPose pose, out string rejectReason)
+        // box is the caller's tile-local placement box (the spawner's
+        // ComputeWorldAabbLocal, or its fallback box); the free-standing probe
+        // (#1367) judges the pose's surface against it.
+        internal static bool TryResolveReviewedPose(Tile tile, PlacementMasks masks, Bounds box, out ReviewedCameraPose pose, out string rejectReason)
         {
             Load();
             pose = default;
@@ -537,7 +550,8 @@ namespace Y4NGZCompany.Facility.Cameras
                 Vector3 worldPos = TileLocalToWorld(tile, record.tileLocalPosition);
                 Quaternion worldRot = tile.Placement.Rotation * Quaternion.Euler(record.tileLocalEuler);
                 CameraReviewMetrics metrics = ComputeMetrics(worldPos, worldRot, tile, masks);
-                if (!ReviewedPoseStillValid(tile, worldPos, worldRot, record, metrics, masks, out string reason, out string category))
+                if (!ReviewedPoseStillValid(tile, worldPos, worldRot, record, metrics, masks, box,
+                        out Vector3 surfaceNormal, out float surfaceDistanceM, out string reason, out string category))
                 {
                     rejectReason = reason;
                     PlacementReviewRoundReport.NoteReviewedPoseReject(category);
@@ -552,7 +566,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 bestScore = score;
                 best = record;
                 bestBoundsPenalty = boundsPenalty;
-                pose = new ReviewedCameraPose(worldPos, worldRot, record, metrics);
+                pose = new ReviewedCameraPose(worldPos, worldRot, record, metrics, surfaceNormal, surfaceDistanceM);
             }
 
             // Mirrors the canonical store's RESOLVE_BOUNDS_MISMATCH: warn only when the
@@ -588,8 +602,7 @@ namespace Y4NGZCompany.Facility.Cameras
 
                 if (HasTag(record, CameraPlacementReviewTags.SkyboxVisible))
                 {
-                    if (candidate.FrustumVoids >= Mathf.Max(2, record.frustumVoids) ||
-                        candidate.CenterUsefulDistM >= 32f)
+                    if (candidate.FrustumVoids >= Mathf.Max(2, record.frustumVoids))
                     {
                         reason = "review-skybox-pattern";
                         return true;
@@ -637,6 +650,9 @@ namespace Y4NGZCompany.Facility.Cameras
         {
             Load();
             float adjustment = 0f;
+            // Review heuristics were calibrated against nine samples. Preserve
+            // those proportions now that the shared safety gate samples 25.
+            float sampleScale = 9f / Mathf.Max(1, candidate.FrustumHits + candidate.FrustumVoids);
             foreach (CameraPlacementReviewRecord record in EnumerateReviews())
             {
                 if (!MatchesTile(record, tile)) continue;
@@ -653,14 +669,14 @@ namespace Y4NGZCompany.Facility.Cameras
                     adjustment -= 520f;
                 if (HasTag(record, CameraPlacementReviewTags.BlockedView) &&
                     (candidate.CenterUsefulDistM <= Mathf.Max(3.0f, record.centerSightDistance + 2.0f) ||
-                     candidate.FrustumNearWall >= 3))
+                     candidate.FrustumNearWall * sampleScale >= 3f))
                     adjustment -= 750f;
                 if (HasTag(record, CameraPlacementReviewTags.LookingAtWall) &&
                     (candidate.CenterUsefulDistM <= Mathf.Max(3.0f, record.centerSightDistance + 1.5f) ||
-                     candidate.FrustumNearWall >= 2))
+                     candidate.FrustumNearWall * sampleScale >= 2f))
                     adjustment -= 950f;
                 if (HasTag(record, CameraPlacementReviewTags.PoorCoverage) &&
-                    (candidate.FrustumHits <= 4 || candidate.RoomFramingScore <= 0.2f))
+                    (candidate.FrustumHits * sampleScale <= 4f || candidate.RoomFramingScore <= 0.2f))
                     adjustment -= 620f;
                 if (HasTag(record, CameraPlacementReviewTags.DoorwayNotVisible) &&
                     candidate.DoorwayVisibilityScore <= 0f)
@@ -675,7 +691,7 @@ namespace Y4NGZCompany.Facility.Cameras
                     int voidThreshold = Math.Max(1, Math.Min(4, record.frustumVoids > 0 ? record.frustumVoids - 1 : 2));
                     if (candidate.FrustumVoids >= voidThreshold)
                         adjustment -= 1200f + candidate.FrustumVoids * 140f;
-                    if (candidate.FrustumVoids >= 3 || candidate.CenterUsefulDistM >= 32f)
+                    if (candidate.FrustumVoids >= 3)
                         adjustment -= 500f;
                     if (usingExpandedFallback)
                         adjustment -= 900f;
@@ -712,25 +728,11 @@ namespace Y4NGZCompany.Facility.Cameras
             return candidate.Score + adjustment;
         }
 
-        internal static bool ShouldAvoidLegacyFallback(Tile tile)
-        {
-            Load();
-            foreach (CameraPlacementReviewRecord record in EnumerateReviews())
-            {
-                if (!MatchesTile(record, tile)) continue;
-                if (IsRating(record, CameraPlacementReviewRating.Floating) ||
-                    IsRating(record, CameraPlacementReviewRating.TooLow) ||
-                    IsRating(record, CameraPlacementReviewRating.LookingAtWall) ||
-                    IsRating(record, CameraPlacementReviewRating.SkyboxVisible))
-                    return true;
-            }
-            return false;
-        }
-
-        internal static void ApplyCandidateDiagnostics(CCTVCamera camera, SurfaceMount.Candidate candidate, string source)
+        internal static void ApplyCandidateDiagnostics(CCTVCamera camera, SurfaceMount.Candidate candidate, string source, string tier)
         {
             if (camera == null) return;
             camera.PlacementSource = source;
+            camera.PlacementTier = tier;
             camera.PlacementSurfaceKind = candidate.Kind.ToString();
             camera.PlacementScore = candidate.Score;
             camera.PlacementHeightAboveFloorM = candidate.MountHeightAboveFloorM;
@@ -741,7 +743,9 @@ namespace Y4NGZCompany.Facility.Cameras
             camera.PlacementDoorwayVisibilityScore = candidate.DoorwayVisibilityScore;
             camera.PlacementRoomFramingScore = candidate.RoomFramingScore;
             camera.PlacementAimProfile = candidate.AimProfile;
+            // Every candidate is inset SurfaceInsetM from the structural surface it was validated on.
             camera.PlacementSurfaceNormal = candidate.SupportNormal;
+            camera.PlacementSurfaceDistanceM = SurfaceMount.SurfaceInsetM;
             camera.PlacementHitName = candidate.HitName;
             camera.PlacementHitLayer = candidate.HitLayer;
             camera.FromReviewedPlacementProfile = false;
@@ -751,6 +755,7 @@ namespace Y4NGZCompany.Facility.Cameras
         {
             if (camera == null) return;
             camera.PlacementSource = "reviewed-perfect";
+            camera.PlacementTier = "reviewed";
             camera.PlacementSurfaceKind = reviewed.Record.surfaceKind ?? "reviewed";
             camera.PlacementScore = 10000f;
             camera.PlacementHeightAboveFloorM = reviewed.Metrics.HeightAboveFloor;
@@ -763,7 +768,8 @@ namespace Y4NGZCompany.Facility.Cameras
             camera.PlacementAimProfile = string.IsNullOrEmpty(reviewed.Record.aimProfile)
                 ? "reviewed"
                 : reviewed.Record.aimProfile;
-            camera.PlacementSurfaceNormal = TileLocalDirectionToWorld(camera.OwningTile, reviewed.Record.tileLocalSurfaceNormal);
+            camera.PlacementSurfaceNormal = reviewed.SurfaceNormal;
+            camera.PlacementSurfaceDistanceM = reviewed.SurfaceDistanceM;
             camera.PlacementHitName = reviewed.Metrics.ForwardHitName;
             camera.PlacementHitLayer = reviewed.Metrics.ForwardHitLayer;
             camera.FromReviewedPlacementProfile = true;
@@ -806,8 +812,21 @@ namespace Y4NGZCompany.Facility.Cameras
             return new CameraReviewMetrics(height, centerDist, hits, voids, nearWall, hitName, hitLayer, hitDistance);
         }
 
-        private static bool ReviewedPoseStillValid(Tile tile, Vector3 worldPos, Quaternion worldRot, CameraPlacementReviewRecord record, CameraReviewMetrics metrics, PlacementMasks masks, out string reason, out string category)
+        private static bool ReviewedPoseStillValid(
+            Tile tile,
+            Vector3 worldPos,
+            Quaternion worldRot,
+            CameraPlacementReviewRecord record,
+            CameraReviewMetrics metrics,
+            PlacementMasks masks,
+            Bounds box,
+            out Vector3 surfaceNormal,
+            out float surfaceDistanceM,
+            out string reason,
+            out string category)
         {
+            surfaceNormal = Vector3.zero;
+            surfaceDistanceM = 0f;
             reason = null;
             category = null;
             if (metrics.HeightAboveFloor < 1.65f)
@@ -842,31 +861,102 @@ namespace Y4NGZCompany.Facility.Cameras
             if (normal.sqrMagnitude > 0.1f)
             {
                 Vector3 n = normal.normalized;
-                if (!Physics.Raycast(worldPos + n * 0.05f, -n, 0.75f, masks.MountMask, QueryTriggerInteraction.Ignore))
+                if (!Physics.Raycast(worldPos + n * ReviewedContactStandoffM, -n, out RaycastHit contact,
+                        ReviewedSurfaceProbeM, masks.MountMask, QueryTriggerInteraction.Ignore))
                 {
                     reason = "surface-contact-lost";
                     category = ReviewedPoseRejectCategories.SurfaceContactLost;
                     return false;
                 }
 
+                // #1367: a saved surface can be a shelf side or panel standing
+                // in the room; the same free-standing probe procedural mounts pass.
+                if (SurfaceMount.IsFreeStandingSurface(in contact, box, tile.Placement, masks.MountMask, out _))
+                {
+                    reason = "surface-" + StructuralPatchLogic.FreeStandingReason;
+                    category = ReviewedPoseRejectCategories.SurfaceFreeStanding;
+                    return false;
+                }
+
+                surfaceNormal = n;
+                surfaceDistanceM = Mathf.Max(0f, contact.distance - ReviewedContactStandoffM);
                 return true;
             }
 
             // No saved surface normal (13 of 29 local Perfect records are like this, including a
-            // CloverTile one). This check used to be skipped entirely when the normal was missing,
-            // so nothing verified the camera was attached to anything - a review applies to every
-            // tile instance sharing its name, so on a CloverTile-dense flow one such record placed
-            // cameras floating in mid-air. Fall back to a direction-agnostic proximity probe: any
-            // genuinely mounted pose has mount geometry within arm's reach, a mid-room pose does
-            // not. Rejecting here just falls through to procedural placement, which mounts properly.
-            if (!Physics.CheckSphere(worldPos, UnverifiedMountProbeRadius, masks.MountMask, QueryTriggerInteraction.Ignore))
+            // CloverTile one). A review applies to every tile instance sharing its name, so an
+            // unverified record can place cameras floating in mid-air or on a rail. #1313: find
+            // the nearest wall or ceiling behind or above the pose, then cast straight at it along
+            // its normal so the stored distance is perpendicular (the back/up ray is slanted for a
+            // yawed pose), and require the same structural patch every procedural mount passes.
+            // Rejecting here just falls through to procedural placement for the tile.
+            if (!TryFindReviewedMountSurface(worldPos, worldRot, masks, out RaycastHit foundHit) ||
+                !Physics.Raycast(worldPos, -foundHit.normal.normalized, out RaycastHit surfaceHit, ReviewedSurfaceProbeM,
+                    masks.MountMask, QueryTriggerInteraction.Ignore) ||
+                !IsMountSurfaceNormal(surfaceHit.normal, out bool ceiling))
             {
-                reason = $"surface-contact-unverifiable no-normal probe={UnverifiedMountProbeRadius:F2}m";
-                category = ReviewedPoseRejectCategories.SurfaceContactUnverifiable;
-                return false;
+                reason = "surface-patch:no-surface";
+            }
+            else
+            {
+                Vector2 halfExtents = ceiling ? SurfaceMount.CeilingPatchHalfExtents : SurfaceMount.WallPatchHalfExtents;
+                if (SurfaceMount.IsStructuralPatch(in surfaceHit, halfExtents, masks.MountMask, out string patchReason))
+                {
+                    if (SurfaceMount.IsFreeStandingSurface(in surfaceHit, box, tile.Placement, masks.MountMask, out _))
+                    {
+                        reason = "surface-" + StructuralPatchLogic.FreeStandingReason;
+                        category = ReviewedPoseRejectCategories.SurfaceFreeStanding;
+                        return false;
+                    }
+
+                    surfaceNormal = surfaceHit.normal.normalized;
+                    surfaceDistanceM = Mathf.Max(0f, Vector3.Dot(worldPos - surfaceHit.point, surfaceNormal));
+                    return true;
+                }
+                reason = "surface-patch:" + patchReason;
             }
 
-            return true;
+            category = ReviewedPoseRejectCategories.SurfaceContactUnverifiable;
+            SurveillanceBootstrap.Log?.LogInfo(
+                $"[Y4NGZ.PlacementReview] REVIEW_POSE_DROPPED tile={tile?.name} reason={reason}");
+            return false;
+        }
+
+        // Nearest wall (|normal.y| < 0.5) or ceiling (normal.y < -0.5) hit along the pose's
+        // horizontal back direction or straight up, within ReviewedSurfaceProbeM.
+        private static bool TryFindReviewedMountSurface(
+            Vector3 worldPos, Quaternion worldRot, PlacementMasks masks, out RaycastHit surfaceHit)
+        {
+            surfaceHit = default;
+            bool found = false;
+
+            Vector3 back = -(worldRot * Vector3.forward);
+            back.y = 0f;
+            if (back.sqrMagnitude > 1e-6f &&
+                Physics.Raycast(worldPos, back.normalized, out RaycastHit backHit, ReviewedSurfaceProbeM,
+                    masks.MountMask, QueryTriggerInteraction.Ignore) &&
+                IsMountSurfaceNormal(backHit.normal, out _))
+            {
+                surfaceHit = backHit;
+                found = true;
+            }
+
+            if (Physics.Raycast(worldPos, Vector3.up, out RaycastHit upHit, ReviewedSurfaceProbeM,
+                    masks.MountMask, QueryTriggerInteraction.Ignore) &&
+                IsMountSurfaceNormal(upHit.normal, out _) &&
+                (!found || upHit.distance < surfaceHit.distance))
+            {
+                surfaceHit = upHit;
+                found = true;
+            }
+
+            return found;
+        }
+
+        private static bool IsMountSurfaceNormal(Vector3 normal, out bool ceiling)
+        {
+            ceiling = normal.y < -0.5f;
+            return ceiling || Mathf.Abs(normal.y) < 0.5f;
         }
 
         private static IEnumerable<CameraPlacementReviewRecord> EnumerateReviews()
@@ -909,7 +999,7 @@ namespace Y4NGZCompany.Facility.Cameras
 
         /// <summary>
         /// Phase 3e: matches a review to a tile using the canonical rules from
-        /// INTERIOR_PLACEMENT_SYSTEM.md §4 instead of the old ordinal/hard-bounds pair.
+        /// docs/interior-placement/04-tile-matching-canonical-store.md instead of the old ordinal/hard-bounds pair.
         ///
         /// - Name comparison goes through <see cref="AuthoredInteriorPlacementStore.NormalizeTileNameForMatch"/>
         ///   (repeated <c>(Clone)</c> stripping, <c>(1)</c> / <c>_02</c> instance suffixes,

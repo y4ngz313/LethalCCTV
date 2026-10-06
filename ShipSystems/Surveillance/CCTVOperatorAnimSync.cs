@@ -95,6 +95,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _message = null;
         }
 
+        internal static void TickRemoteHandsAfterCamera()
+        {
+            foreach (OperatorAnimSession session in _remoteSessions.Values)
+                session?.TickRemoteOperatorPose();
+        }
+
         internal static void Tick()
         {
             if (_remoteSessions.Count == 0)

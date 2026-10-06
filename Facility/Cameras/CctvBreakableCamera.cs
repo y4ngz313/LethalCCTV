@@ -93,10 +93,9 @@ namespace Y4NGZCompany.Facility.Cameras
             if (!TryResolvePropsLayer(out int propsLayer))
                 return;
 
-            // The visual build schedules every prefab/primitive collider for a
-            // deferred Object.Destroy on this same frame, so the doomed colliders
-            // are still visible to GetComponentInChildren here. The hitbox child is
-            // created unconditionally instead of probing for an existing collider.
+            // The visual build removes every prefab/primitive collider (immediately since
+            // #1271), so this child owns the prop's only collider. It is created
+            // unconditionally instead of probing for an existing collider.
             var hitbox = new GameObject(HitboxChildName).transform;
             hitbox.SetParent(target.transform, worldPositionStays: false);
             hitbox.localRotation = Quaternion.identity;

@@ -85,20 +85,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             rt.localScale = Vector3.one;
         }
 
-        private static void TryAssignHudFont(TextMeshProUGUI target)
-        {
-            if (target == null)
-                return;
-
-            try
-            {
-                HUDManager hud = HUDManager.Instance;
-                TextMeshProUGUI[] tips = hud != null ? hud.controlTipLines : null;
-                if (tips != null && tips.Length > 0 && tips[0] != null && tips[0].font != null)
-                    target.font = tips[0].font;
-            }
-            catch { }
-        }
+        private static void TryAssignHudFont(TextMeshProUGUI target) => ApplyMachineVisionText(target);
 
         private static void ApplyTextureToMaterial(Material material, Texture texture)
         {

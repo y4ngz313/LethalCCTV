@@ -12,14 +12,17 @@ namespace Y4NGZCompany.Facility.Stash
     public sealed class CompanyStashController : NetworkBehaviour, ICompanyStashKeypadClient
     {
         public const int CodeDigits = 4;
+        internal const float BodyHeightMultiplier = 1.15f;
+        internal const float BodyHeight = 2f * BodyHeightMultiplier;
 
         private const int ScanNodeLayer = 22;
         private const float ResultDisplaySeconds = 1.15f;
         private const float LootSpawnDelaySeconds = 0.65f;
         private const float LootLateralOffsetStep = 0.25f;
+        private const float AuthoredCabinetScaleY = 1.0035087f;
         private const string AccessDeniedText = "Denied";
         private const string AccessGrantedText = "Granted";
-        private static readonly Vector3 KeypadMountedRootLocalPosition = new Vector3(-0.17f, 1.28f, 0.26f);
+        private static readonly Vector3 KeypadMountedRootLocalPosition = new Vector3(-0.17f, 1.45f, 0.26f);
         private static readonly Vector3 GoldBarStableRootLocalPosition = new Vector3(0f, 0.75f, -0.08f);
 
         private readonly NetworkVariable<bool> _isUnlocked = new NetworkVariable<bool>(
@@ -47,6 +50,7 @@ namespace Y4NGZCompany.Facility.Stash
         private float _fallbackOpenProgress;
         private bool _openVisualStarted;
         private bool _lootSpawned;
+        private bool _bodySizeInitialized;
         private bool _keypadMounted;
         private bool _localSubmitPending;
         private Coroutine _lootSpawnRoutine;
@@ -340,6 +344,8 @@ namespace Y4NGZCompany.Facility.Stash
 
         private void EnsureRuntimeComponents()
         {
+            EnsureBodySize();
+
             if (_keypadVisualRoot == null)
                 _keypadVisualRoot = FindKeypadVisualRoot();
 
@@ -378,6 +384,36 @@ namespace Y4NGZCompany.Facility.Stash
             CaptureDoorRotations();
             MountKeypadToDoor();
             EnsureScanNodes();
+        }
+
+        private void EnsureBodySize()
+        {
+            if (_bodySizeInitialized)
+                return;
+
+            _bodySizeInitialized = true;
+            Transform cabinet = transform.Find("Cabinet");
+            if (cabinet == null)
+                return; // Generated fallback geometry is already sized by the spawner.
+
+            // The shipped Cabinet is floor-pivoted and authored at 2 m with this
+            // normalization scale. Assign absolutely: prefab preparation and a
+            // clone (or a replacement controller) must never compound the resize.
+            Vector3 scale = cabinet.localScale;
+            scale.y = AuthoredCabinetScaleY * BodyHeightMultiplier;
+            cabinet.localScale = scale;
+
+            BoxCollider collider = GetComponent<BoxCollider>();
+            if (collider != null)
+            {
+                // Preserve the root's X/Z extent and the spawner's 0.08 m padding.
+                Vector3 center = collider.center;
+                Vector3 size = collider.size;
+                center.y = BodyHeight * 0.5f;
+                size.y = BodyHeight + 0.08f;
+                collider.center = center;
+                collider.size = size;
+            }
         }
 
         private void BeginSpawnGoldBarLootServer()
@@ -695,7 +731,7 @@ namespace Y4NGZCompany.Facility.Stash
         private void EnsureScanNodes()
         {
             RemoveKeypadScanNodes();
-            EnsureScanNode(transform, "CompanyStashScanNode", "Company Stash", IsUnlocked ? "access granted" : "secured", new Vector3(0f, 1.05f, 0f), 0.52f, 32);
+            EnsureScanNode(transform, "CompanyStashScanNode", "Company Stash", IsUnlocked ? "access granted" : "secured", new Vector3(0f, 1.05f * BodyHeightMultiplier, 0f), 0.52f, 12);
         }
 
         private void RemoveKeypadScanNodes()

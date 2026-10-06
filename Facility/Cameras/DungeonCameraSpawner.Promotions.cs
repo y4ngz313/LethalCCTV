@@ -138,7 +138,8 @@ namespace Y4NGZCompany.Facility.Cameras
 
         private List<CameraPick> ApplyApparatusPromotion(
             IReadOnlyList<Tile> allTiles,
-            List<CameraPick> orderedPicks)
+            List<CameraPick> orderedPicks,
+            IReadOnlyList<Vector3> apparatusPositions)
         {
             _apparatusTile = null;
             _apparatusWorldPosition = Vector3.zero;
@@ -148,6 +149,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 return orderedPicks;
             if (!TryResolveApparatusPromotionTarget(
                     allTiles,
+                    apparatusPositions,
                     out Tile apparatusTile,
                     out int apparatusSrcIndex,
                     out Vector3 apparatusPosition))
@@ -588,8 +590,13 @@ namespace Y4NGZCompany.Facility.Cameras
             return false;
         }
 
+        // #1283: the positions come from the SpawnSyncedObject markers
+        // (CollectSpawnMarkerInputs); the LungProp itself is network-spawned after the
+        // dungeon-finished event. A freshly spawned apparatus is never in the ship room or
+        // the elevator, so every marker position is a facility apparatus.
         private static bool TryResolveApparatusPromotionTarget(
             IReadOnlyList<Tile> allTiles,
+            IReadOnlyList<Vector3> apparatusPositions,
             out Tile apparatusTile,
             out int apparatusSrcIndex,
             out Vector3 apparatusPosition)
@@ -597,21 +604,12 @@ namespace Y4NGZCompany.Facility.Cameras
             apparatusTile = null;
             apparatusSrcIndex = -1;
             apparatusPosition = Vector3.zero;
-            if (allTiles == null || allTiles.Count == 0)
+            if (allTiles == null || allTiles.Count == 0 || apparatusPositions == null)
                 return false;
 
-            LungProp[] apparatuses = UnityEngine.Object.FindObjectsByType<LungProp>(
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None);
-            for (int i = 0; i < apparatuses.Length; i++)
+            for (int i = 0; i < apparatusPositions.Count; i++)
             {
-                LungProp apparatus = apparatuses[i];
-                if (apparatus == null || apparatus.gameObject == null)
-                    continue;
-                if (apparatus.isInShipRoom || apparatus.isInElevator)
-                    continue;
-
-                Vector3 position = apparatus.transform.position;
+                Vector3 position = apparatusPositions[i];
                 if (!TryFindTileForMarker(allTiles, position, out Tile tile, out int srcIndex))
                     continue;
                 Vector3 closest = tile.Bounds.ClosestPoint(position);

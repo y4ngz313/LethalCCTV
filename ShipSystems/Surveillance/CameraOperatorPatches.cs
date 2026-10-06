@@ -12,10 +12,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         {
             if (!MonitorFocus.IsFocused) return true;
             if (Y4NGZPlayerAnimationBridge.IsFirstPersonHandEditModeActive) return false;
-            if (context.performed)
-            {
-                MonitorFocus.TriggerCameraContextOrScan();
-            }
+            // Vanilla scan is RMB. Station interactions belong to the explicit
+            // left-click action; consuming scan must never open a hacking UI.
             return false;
         }
     }

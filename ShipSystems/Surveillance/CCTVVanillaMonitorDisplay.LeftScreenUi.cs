@@ -14,216 +14,51 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     {
         private static void CreateLeftCameraLabel(RectTransform canvas)
         {
-            GameObject labelGo = new GameObject("CCTVCameraLabel", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            labelGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(labelGo, UiRenderLayer);
-
-            RectTransform rt = labelGo.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(1f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(1f, 1f);
-            rt.anchoredPosition = new Vector2(-32f, -26f);
-            rt.sizeDelta = new Vector2(180f, 42f);
-
-            _leftCameraLabel = labelGo.GetComponent<TextMeshProUGUI>();
-            _leftCameraLabel.text = "CAM_--";
-            _leftCameraLabel.raycastTarget = false;
-            _leftCameraLabel.enableWordWrapping = false;
-            _leftCameraLabel.overflowMode = TextOverflowModes.Ellipsis;
-            _leftCameraLabel.richText = false;
-            _leftCameraLabel.alignment = TextAlignmentOptions.TopRight;
-            _leftCameraLabel.fontSize = 34f;
-            _leftCameraLabel.color = new Color(0.12f, 1f, 0.28f, 0.96f);
-            TryAssignHudFont(_leftCameraLabel);
-
-            GameObject pageGo = new GameObject("CCTVPageLabel", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            pageGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(pageGo, UiRenderLayer);
-
-            RectTransform pageRt = pageGo.GetComponent<RectTransform>();
-            pageRt.anchorMin = new Vector2(1f, 1f);
-            pageRt.anchorMax = new Vector2(1f, 1f);
-            pageRt.pivot = new Vector2(1f, 1f);
-            pageRt.anchoredPosition = new Vector2(-34f, -64f);
-            pageRt.sizeDelta = new Vector2(220f, 30f);
-
-            _leftPageLabel = pageGo.GetComponent<TextMeshProUGUI>();
-            _leftPageLabel.text = "01/01";
-            _leftPageLabel.raycastTarget = false;
-            _leftPageLabel.enableWordWrapping = false;
-            _leftPageLabel.richText = false;
-            _leftPageLabel.alignment = TextAlignmentOptions.TopRight;
-            _leftPageLabel.fontSize = 20f;
-            _leftPageLabel.color = new Color(0.12f, 1f, 0.28f, 0.82f);
-            TryAssignHudFont(_leftPageLabel);
-
-            // Third entry in the same top-right stack: CAM at -26, PAGE at -64, clock
-            // at -90. 24-hour HH:MM, from CctvScreenClock.
-            GameObject clockGo = new GameObject("CCTVClockLabel", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            clockGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(clockGo, UiRenderLayer);
-
-            RectTransform clockRt = clockGo.GetComponent<RectTransform>();
-            clockRt.anchorMin = new Vector2(1f, 1f);
-            clockRt.anchorMax = new Vector2(1f, 1f);
-            clockRt.pivot = new Vector2(1f, 1f);
-            clockRt.anchoredPosition = new Vector2(-34f, -90f);
-            clockRt.sizeDelta = new Vector2(220f, 32f);
-
-            _leftClockLabel = clockGo.GetComponent<TextMeshProUGUI>();
+            CreateMachineVisionFurniture(canvas, 72f);
+            // The physical instruction note overlaps the first 7% of the screen.
+            _leftCameraLabel = CreateMachineVisionLabel(canvas, "CCTVCameraLabel", Vector2.up,
+                new Vector2(72f, -14f), new Vector2(510f, 30f), 23f, TextAlignmentOptions.TopLeft);
+            _leftCameraLabel.text = "CAM -- / INTERIOR";
+            _leftClockLabel = CreateMachineVisionLabel(canvas, "CCTVClockLabel", Vector2.one,
+                new Vector2(-24f, -44f), new Vector2(160f, 22f), 18f, TextAlignmentOptions.TopRight);
             _leftClockLabel.text = CctvScreenClock.UnavailableText;
             _lastLeftClockText = CctvScreenClock.UnavailableText;
-            _leftClockLabel.raycastTarget = false;
-            _leftClockLabel.enableWordWrapping = false;
-            _leftClockLabel.richText = false;
-            _leftClockLabel.alignment = TextAlignmentOptions.TopRight;
-            _leftClockLabel.fontSize = 22f;
-            _leftClockLabel.color = new Color(0.12f, 1f, 0.28f, 0.88f);
-            TryAssignHudFont(_leftClockLabel);
         }
 
-        /// <summary>
-        /// Top-left REC light: a small red dot plus the word REC, both alpha-blinked at
-        /// 1 Hz by <see cref="RefreshLeftScreenFurniture"/>.
-        /// </summary>
         private static void CreateLeftRecIndicator(RectTransform canvas)
         {
-            GameObject dotGo = new GameObject("CCTVRecDot", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-            dotGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(dotGo, UiRenderLayer);
-
-            RectTransform dotRt = dotGo.GetComponent<RectTransform>();
-            dotRt.anchorMin = new Vector2(0f, 1f);
-            dotRt.anchorMax = new Vector2(0f, 1f);
-            dotRt.pivot = new Vector2(0f, 1f);
-            dotRt.anchoredPosition = new Vector2(30f, -24f);
-            dotRt.sizeDelta = new Vector2(14f, 14f);
-
-            _leftRecDot = dotGo.GetComponent<Image>();
-            _leftRecDot.color = new Color(1f, 0.16f, 0.14f, 1f);
-            _leftRecDot.raycastTarget = false;
-
-            GameObject recGo = new GameObject("CCTVRecLabel", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            recGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(recGo, UiRenderLayer);
-
-            RectTransform recRt = recGo.GetComponent<RectTransform>();
-            recRt.anchorMin = new Vector2(0f, 1f);
-            recRt.anchorMax = new Vector2(0f, 1f);
-            recRt.pivot = new Vector2(0f, 1f);
-            recRt.anchoredPosition = new Vector2(52f, -18f);
-            recRt.sizeDelta = new Vector2(110f, 26f);
-
-            _leftRecLabel = recGo.GetComponent<TextMeshProUGUI>();
-            _leftRecLabel.text = "REC";
-            _leftRecLabel.raycastTarget = false;
-            _leftRecLabel.enableWordWrapping = false;
-            _leftRecLabel.richText = false;
-            _leftRecLabel.alignment = TextAlignmentOptions.MidlineLeft;
-            _leftRecLabel.fontSize = 22f;
-            _leftRecLabel.color = new Color(1f, 0.30f, 0.26f, 0.95f);
-            TryAssignHudFont(_leftRecLabel);
-
-            // Both are built lit, so seed the cache to match — otherwise the first
-            // refresh sees "already off" and the light never starts blinking.
+            _leftRecLabel = CreateMachineVisionLabel(canvas, "CCTVLive", Vector2.one,
+                new Vector2(-24f, -14f), new Vector2(125f, 28f), 22f, TextAlignmentOptions.TopRight);
+            _leftRecLabel.text = "+ LIVE";
             _lastLeftRecOn = true;
         }
 
-        /// <summary>
-        /// Eight thin rects forming an L at each corner. Inset 12 px so they clear the
-        /// 5 px border frame and sit just outside the 14 px feed margin, framing the
-        /// picture the way a DVR's viewfinder brackets do.
-        /// </summary>
-        private static void CreateLeftCornerBrackets(RectTransform canvas)
-        {
-            Color color = new Color(0.12f, 1f, 0.28f, 0.55f);
-            const float inset = 12f;
-            const float arm = 34f;
-            const float thickness = 3f;
-
-            CreateCornerBracket(canvas, "TL", new Vector2(0f, 1f), new Vector2(inset, -inset), arm, thickness, color);
-            CreateCornerBracket(canvas, "TR", new Vector2(1f, 1f), new Vector2(-inset, -inset), arm, thickness, color);
-            CreateCornerBracket(canvas, "BL", new Vector2(0f, 0f), new Vector2(inset, inset), arm, thickness, color);
-            CreateCornerBracket(canvas, "BR", new Vector2(1f, 0f), new Vector2(-inset, inset), arm, thickness, color);
-        }
-
-        private static void CreateCornerBracket(RectTransform canvas, string corner, Vector2 anchor, Vector2 position, float arm, float thickness, Color color)
-        {
-            CreateBracketArm(canvas, $"CCTVBracket{corner}H", anchor, position, new Vector2(arm, thickness), color);
-            CreateBracketArm(canvas, $"CCTVBracket{corner}V", anchor, position, new Vector2(thickness, arm), color);
-        }
-
-        private static void CreateBracketArm(RectTransform canvas, string name, Vector2 anchor, Vector2 position, Vector2 size, Color color)
-        {
-            GameObject go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-            go.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(go, UiRenderLayer);
-
-            RectTransform rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = anchor;
-            rt.anchorMax = anchor;
-            // Pivot matches the anchored corner, so the arm always grows inward and
-            // both arms of a corner share one anchoredPosition.
-            rt.pivot = anchor;
-            rt.anchoredPosition = position;
-            rt.sizeDelta = size;
-
-            Image image = go.GetComponent<Image>();
-            image.color = color;
-            image.raycastTarget = false;
-        }
-
-        /// <summary>
-        /// Bottom-left status readout: the feed's real resolution and nominal capture
-        /// rate, plus five signal bars driven by the bound camera's actual state.
-        /// </summary>
         private static void CreateLeftStatusLine(RectTransform canvas)
         {
-            GameObject statusGo = new GameObject("CCTVStatusLabel", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
-            statusGo.transform.SetParent(canvas, worldPositionStays: false);
-            SetLayerRecursive(statusGo, UiRenderLayer);
-
-            RectTransform statusRt = statusGo.GetComponent<RectTransform>();
-            statusRt.anchorMin = new Vector2(0f, 0f);
-            statusRt.anchorMax = new Vector2(0f, 0f);
-            statusRt.pivot = new Vector2(0f, 0f);
-            statusRt.anchoredPosition = new Vector2(30f, 18f);
-            statusRt.sizeDelta = new Vector2(300f, 26f);
-
-            _leftStatusLabel = statusGo.GetComponent<TextMeshProUGUI>();
+            _leftStatusLabel = CreateMachineVisionLabel(canvas, "CCTVStatusLabel", Vector2.zero,
+                new Vector2(24f, 6f), new Vector2(380f, 25f), 20f, TextAlignmentOptions.MidlineLeft);
             _leftStatusLabel.text = BuildStatusLineText();
             _lastLeftStatusText = _leftStatusLabel.text;
-            _leftStatusLabel.raycastTarget = false;
-            _leftStatusLabel.enableWordWrapping = false;
-            _leftStatusLabel.richText = false;
-            _leftStatusLabel.alignment = TextAlignmentOptions.MidlineLeft;
-            _leftStatusLabel.fontSize = 18f;
-            _leftStatusLabel.color = new Color(0.12f, 1f, 0.28f, 0.72f);
-            TryAssignHudFont(_leftStatusLabel);
-
-            _leftSignalBars = new Image[SignalBarCount];
-            for (int i = 0; i < SignalBarCount; i++)
-            {
-                GameObject barGo = new GameObject($"CCTVSignalBar{i}", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-                barGo.transform.SetParent(canvas, worldPositionStays: false);
-                SetLayerRecursive(barGo, UiRenderLayer);
-
-                RectTransform barRt = barGo.GetComponent<RectTransform>();
-                barRt.anchorMin = new Vector2(0f, 0f);
-                barRt.anchorMax = new Vector2(0f, 0f);
-                barRt.pivot = new Vector2(0f, 0f);
-                barRt.anchoredPosition = new Vector2(250f + i * 9f, 18f);
-                barRt.sizeDelta = new Vector2(5f, 6f + i * 3f);
-
-                _leftSignalBars[i] = barGo.GetComponent<Image>();
-                _leftSignalBars[i].color = new Color(0.12f, 1f, 0.28f, 0.18f);
-                _leftSignalBars[i].raycastTarget = false;
-            }
+            _leftZoomLabel = CreateMachineVisionLabel(canvas, "CCTVZoomLabel", Vector2.right,
+                new Vector2(-24f, 6f), new Vector2(220f, 25f), 20f, TextAlignmentOptions.MidlineRight);
         }
 
         private static string BuildStatusLineText()
         {
-            return $"{MonitorWidth}x{MonitorHeight} | 24FPS";
+            if (MonitorFocus.IsTurretPageActive) return "LINK STABLE / TURRET";
+            if (MonitorFocus.IsBodycamFeedActive) return "LINK STABLE / CREW";
+            CCTVCamera active = QuadCameraAssignment.GetBoundCamera(0);
+            if (active != null && active.IsSecurityBroken) return "SIGNAL LOST";
+            return active == null ? "NO FEED" : "LINK STABLE";
+        }
+
+        private static string BuildZoomText()
+        {
+            CCTVCamera active = MonitorFocus.IsFacilityFeedActive ? QuadCameraAssignment.GetBoundCamera(0) : null;
+            if (active == null || active.Cam == null) return string.Empty;
+            float baseFov = SurveillanceBootstrap.Config?.FieldOfView?.Value ?? 75f;
+            float zoom = Mathf.Tan(baseFov * Mathf.Deg2Rad * 0.5f) / Mathf.Tan(active.Cam.fieldOfView * Mathf.Deg2Rad * 0.5f);
+            return $"ZOOM {zoom:0.0}x";
         }
 
         /// <summary>
@@ -238,7 +73,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             SetLayerRecursive(rootGo, UiRenderLayer);
 
             RectTransform rootRt = rootGo.GetComponent<RectTransform>();
-            ApplySingleCameraRect(rootRt, 14f);
+            ApplySingleCameraRect(rootRt, 0f);
 
             Image backing = rootGo.GetComponent<Image>();
             backing.color = new Color(0f, 0f, 0f, 0.88f);
@@ -319,7 +154,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             flashGo.transform.SetParent(canvas, worldPositionStays: false);
             SetLayerRecursive(flashGo, UiRenderLayer);
             RectTransform rt = flashGo.GetComponent<RectTransform>();
-            ApplySingleCameraRect(rt, 14f);
+            ApplySingleCameraRect(rt, 0f);
 
             _leftSwitchFlashImage = flashGo.GetComponent<Image>();
             _leftSwitchFlashImage.color = Color.clear;
@@ -343,13 +178,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             rt.anchoredPosition = Vector2.zero;
             rt.sizeDelta = new Vector2(96f, 96f);
 
-            Color color = new Color(0.1f, 1f, 0.28f, 0.76f);
-            CreateReticleSegment(rt, "Top", new Vector2(0f, 24f), new Vector2(3f, 18f), color);
-            CreateReticleSegment(rt, "Bottom", new Vector2(0f, -24f), new Vector2(3f, 18f), color);
-            CreateReticleSegment(rt, "Left", new Vector2(-24f, 0f), new Vector2(18f, 3f), color);
-            CreateReticleSegment(rt, "Right", new Vector2(24f, 0f), new Vector2(18f, 3f), color);
-            CreateReticleSegment(rt, "CenterH", Vector2.zero, new Vector2(12f, 2f), new Color(color.r, color.g, color.b, 0.48f));
-            CreateReticleSegment(rt, "CenterV", Vector2.zero, new Vector2(2f, 12f), new Color(color.r, color.g, color.b, 0.48f));
+            Color color = MachineVisionInk;
+            CreateReticleSegment(rt, "CenterH", Vector2.zero, new Vector2(10f, 1.5f), new Color(color.r, color.g, color.b, 0.48f));
+            CreateReticleSegment(rt, "CenterV", Vector2.zero, new Vector2(1.5f, 10f), new Color(color.r, color.g, color.b, 0.48f));
         }
 
         private static void CreateLeftTerminalOverlayRoot(RectTransform canvas)
@@ -409,14 +240,16 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (_leftCameraLabel == null && _leftPageLabel == null)
                 return false;
 
-            string label = MonitorFocus.GetActiveFeedDisplayLabel();
+            string feed = MonitorFocus.GetActiveFeedDisplayLabel().Replace("CAM_", "CAM ");
+            string label = MonitorFocus.IsFacilityFeedActive ? feed + " / INTERIOR"
+                : MonitorFocus.IsBodycamFeedActive ? "CREW / " + feed : feed;
             string page = MonitorFocus.GetActiveFeedPageLabel();
             bool layoutChanged = false;
             if (_leftCameraLabel != null)
             {
                 RectTransform labelRect = _leftCameraLabel.rectTransform;
-                float labelWidth = bodycamActive ? 300f : 180f;
-                float fontSize = bodycamActive ? 28f : 34f;
+                float labelWidth = 510f;
+                float fontSize = 23f;
                 if (!Mathf.Approximately(labelRect.sizeDelta.x, labelWidth))
                 {
                     labelRect.sizeDelta = new Vector2(labelWidth, labelRect.sizeDelta.y);
@@ -452,13 +285,13 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         }
 
         /// <summary>
-        /// Clock, REC blink, status readout and signal-lost plate.
+        /// Clock, live state, status readout and signal-lost plate.
         ///
         /// State that reflects a real event (a camera breaking, the bound camera
         /// changing) is tracked unconditionally, so the plate is already correct on the
         /// first frame the monitor comes back into view. The purely animated parts —
-        /// clock text and REC blink — only advance while the monitor is observable.
-        /// ShouldRenderCompositor deliberately checks observability BEFORE the dirty
+        /// clock text — only advance while the monitor is observable.
+        /// ShouldRequestCompositor deliberately checks observability BEFORE the dirty
         /// flag, so an unobserved repaint is suppressed either way; gating here keeps
         /// the work itself, and the once-a-second dirty churn, off the hidden path.
         /// </summary>
@@ -492,14 +325,12 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
 
             bool hasFeed = active != null || nonFacilityFeedActive;
-            int litBars = !hasFeed ? 0 : (signalLost ? 1 : SignalBarCount);
-            if (litBars != _lastLeftSignalBars)
+            string zoom = BuildZoomText();
+            if (_leftZoomLabel != null && _leftZoomLabel.text != zoom)
             {
-                _lastLeftSignalBars = litBars;
-                ApplyLeftSignalBars(litBars);
+                _leftZoomLabel.text = zoom;
                 changed = true;
             }
-
             string status = BuildStatusLineText();
             if (_leftStatusLabel != null && !string.Equals(status, _lastLeftStatusText, StringComparison.Ordinal))
             {
@@ -524,11 +355,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 changed = true;
             }
 
-            bool recOn = Mathf.Repeat(now, RecBlinkPeriodSeconds) < RecBlinkPeriodSeconds * RecBlinkOnFraction;
+            bool recOn = hasFeed && !signalLost;
             if (recOn != _lastLeftRecOn)
             {
                 _lastLeftRecOn = recOn;
-                ApplyLeftRecBlink(recOn);
+                ApplyLeftLiveState(recOn);
                 changed = true;
             }
 
@@ -544,26 +375,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             return changed;
         }
 
-        private static void ApplyLeftRecBlink(bool on)
+        private static void ApplyLeftLiveState(bool on)
         {
-            if (_leftRecDot != null)
-                _leftRecDot.color = new Color(1f, 0.16f, 0.14f, on ? 1f : 0.12f);
-            if (_leftRecLabel != null)
-                _leftRecLabel.color = new Color(1f, 0.30f, 0.26f, on ? 0.95f : 0.22f);
-        }
-
-        private static void ApplyLeftSignalBars(int litCount)
-        {
-            if (_leftSignalBars == null)
-                return;
-
-            for (int i = 0; i < _leftSignalBars.Length; i++)
-            {
-                if (_leftSignalBars[i] == null)
-                    continue;
-                bool lit = i < litCount;
-                _leftSignalBars[i].color = new Color(0.12f, 1f, 0.28f, lit ? 0.85f : 0.18f);
-            }
+            if (_leftRecLabel == null) return;
+            _leftRecLabel.text = on ? "+ LIVE" : "OFFLINE";
+            _leftRecLabel.color = on ? MachineVisionInk : new Color(1f, 0.55f, 0.35f, 0.85f);
         }
 
         private static void ScrollLeftSignalLostStatic()

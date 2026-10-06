@@ -70,6 +70,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 MonitorFocus.ForceExit("player-death");
                 return;
             }
+            if (CctvDeviceCommandLine.ConsumesInput) return;
 
             // F1/F2 station viewpoint tuning uses WASD/arrows and mouse hand motion.
             // While that editor is active, the active CCTV camera must stay still so

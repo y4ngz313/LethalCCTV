@@ -4,6 +4,7 @@ using Unity.Netcode;
 using UnityEngine;
 
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 using Y4NGZCompany.Core.Compat;
 using Y4NGZCompany.Facility.Mainframe;
 namespace Y4NGZCompany.Facility.Security
@@ -15,6 +16,7 @@ namespace Y4NGZCompany.Facility.Security
         private static readonly List<CctvSecurityCameraState> Cameras = new List<CctvSecurityCameraState>();
         private static readonly List<CctvSecurityCameraState> LastActiveSet = new List<CctvSecurityCameraState>();
         private static float _nextRotationAt;
+        private static bool? _lastAllCamerasPassive;
         private static float _lastDetectionSweepAt = -1f;
         private static float _alarmEndsAt;
         private static string _alarmReason;
@@ -75,12 +77,10 @@ namespace Y4NGZCompany.Facility.Security
         /// True whenever <see cref="Tick"/> will NOT reach <see cref="TickDetection"/> this
         /// frame — the single answer to "is any camera actually detecting right now".
         ///
-        /// The conditions are exactly the early returns in Tick: the feature switch, the
-        /// hack/meltdown disable, the Containment Breach suppression, and the #466
-        /// post-alarm cooldown. The first two also clear IsSecurityActive, so on their own
-        /// they change nothing; the last two deliberately leave the active set intact
-        /// (cameras keep rotating and rendering) and are the reason presentation needed a
-        /// separate question to ask. Keep this in step with Tick's early returns.
+        /// The conditions are exactly the early returns in Tick: the feature and passive
+        /// switches, hack/meltdown disable, Containment Breach suppression and post-alarm
+        /// cooldown. The last two leave the active set intact (cameras keep rotating and
+        /// rendering), so presentation also needs this separate detection gate.
         ///
         /// Cached per frame because presentation reads it from several MonoBehaviour
         /// Update/LateUpdate loops per camera and the Containment Breach probe is a
@@ -95,8 +95,10 @@ namespace Y4NGZCompany.Facility.Security
                     return _detectionSuppressedCached;
 
                 _detectionSuppressedFrame = frame;
+                CctvSecurityConfig config = CctvSecurityConfig.Current;
                 _detectionSuppressedCached =
-                    !CctvSecurityConfig.Current.Enabled
+                    !config.Enabled
+                    || config.AllCamerasPassive
                     || IsSecurityDisabled
                     || IsContainmentBreachContractActive()
                     || IsAlarmCooldownActive;
@@ -118,6 +120,7 @@ namespace Y4NGZCompany.Facility.Security
             Cameras.Clear();
             LastActiveSet.Clear();
             _nextRotationAt = 0f;
+            _lastAllCamerasPassive = null;
             ResetDetectionSweepClock();
             _securityDisabledByHack = false;
             _securityDisabledByMeltdown = false;
@@ -126,6 +129,7 @@ namespace Y4NGZCompany.Facility.Security
             _detectionSuppressedFrame = -1;
             _detectionSuppressedCached = false;
             CctvAlarmAwarenessPing.ResetRound();
+            CctvMainEntranceTileRule.ResetRound();
             ClearSecurityAlarmTimer(turnOffMainframeIfOwned: true);
         }
 
@@ -159,6 +163,13 @@ namespace Y4NGZCompany.Facility.Security
         {
             CctvSecurityConfig config = CctvSecurityConfig.Current;
             float now = SecurityTimeSeconds();
+            if (_lastAllCamerasPassive != config.AllCamerasPassive)
+            {
+                _detectionSuppressedFrame = -1;
+                RotateActiveSet(force: true, now: now);
+                ResetDetectionSweepClock();
+            }
+
             if (!config.Enabled)
             {
                 ClearAllHostileCameraState();
@@ -170,6 +181,16 @@ namespace Y4NGZCompany.Facility.Security
             }
 
             if (IsSecurityDisabled)
+            {
+                ClearAllHostileCameraState();
+                ClearSecurityAlarmTimer(turnOffMainframeIfOwned: true);
+                ResetDetectionSweepClock();
+                ClearAlarmCooldown();
+                _alarmEpisodeWasActive = false;
+                return;
+            }
+
+            if (config.AllCamerasPassive)
             {
                 ClearAllHostileCameraState();
                 ClearSecurityAlarmTimer(turnOffMainframeIfOwned: true);
@@ -309,7 +330,7 @@ namespace Y4NGZCompany.Facility.Security
 
         internal static int CalculateActiveCameraCount(int eligibleCount, CctvSecurityConfig config)
         {
-            if (eligibleCount <= 0 || !config.Enabled) return 0;
+            if (eligibleCount <= 0 || !config.Enabled || config.AllCamerasPassive) return 0;
 
             char riskTier = ContractsBridge.GetCurrentRiskTier();
             if (TryResolveTierRatio(config, riskTier, out float tierRatio))
@@ -341,7 +362,7 @@ namespace Y4NGZCompany.Facility.Security
         {
             switch (char.ToUpperInvariant(riskTier))
             {
-                // D only reaches here when EnabledRiskD is turned on: with it off,
+                // D only reaches here when Security Enabled - Risk D is turned on: with it off,
                 // config.Enabled is already false and CalculateActiveCameraCount
                 // returns 0 before asking for a ratio.
                 case 'D': ratio = config.ActiveCameraRatioRiskD; return true;
@@ -368,6 +389,7 @@ namespace Y4NGZCompany.Facility.Security
             if (IsAlarmCooldownActive) return;
 
             CctvSecurityConfig config = CctvSecurityConfig.Current;
+            if (config.AllCamerasPassive) return;
 
             // Engage edge, evaluated before the timer is written: a refresh from a camera
             // that is still watching must not re-ping. One ping per alarm episode.
@@ -498,12 +520,19 @@ namespace Y4NGZCompany.Facility.Security
         private static void RotateActiveSet(bool force, float now)
         {
             CctvSecurityConfig config = CctvSecurityConfig.Current;
+            _lastAllCamerasPassive = config.AllCamerasPassive;
             _nextRotationAt = now + config.RotationSeconds;
-            if (!config.Enabled || IsSecurityDisabled)
+            if (!config.Enabled || config.AllCamerasPassive || IsSecurityDisabled)
             {
                 ClearAllHostileCameraState();
                 return;
             }
+
+            // #735: the main-entrance tile's camera never joins the rotation. Applied here, on
+            // every rotation, because the dungeon and supplementary cameras can both arrive
+            // after registration; the rule caches per round so this is a no-op after the first
+            // successful pass.
+            CctvMainEntranceTileRule.Apply(Cameras);
 
             var eligible = new List<CctvSecurityCameraState>();
             for (int i = 0; i < Cameras.Count; i++)
@@ -670,18 +699,15 @@ namespace Y4NGZCompany.Facility.Security
             return Time.unscaledTime;
         }
 
+        /// <summary>
+        /// #716 G5: delegates to <see cref="CctvNetworkRole.IsServer"/>. This used to hold its
+        /// own copy of the role check whose last line returned <c>true</c> when
+        /// <see cref="StartOfRound"/> was null, so a client ran the server-only branches below
+        /// until the singletons resolved.
+        /// </summary>
         private static bool IsServerRuntime()
         {
-            NetworkManager manager = NetworkManager.Singleton;
-            if (manager != null)
-                return manager.IsServer;
-
-            RoundManager round = RoundManager.Instance;
-            if (round != null)
-                return round.IsServer;
-
-            StartOfRound start = StartOfRound.Instance;
-            return start == null || start.IsServer || start.IsHost;
+            return CctvNetworkRole.IsServer();
         }
     }
 }

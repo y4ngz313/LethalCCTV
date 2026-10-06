@@ -288,6 +288,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         /// </summary>
         internal static void ResetForOrbit(string reason)
         {
+            CctvDeviceCommands.Reset();
             _serverFeedCctv = false;
             _serverOperatorId = -1;
             _serverActiveSlot = -1;

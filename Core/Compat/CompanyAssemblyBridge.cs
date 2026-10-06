@@ -24,13 +24,17 @@ namespace Y4NGZCompany.Core.Compat
     {
         internal const string CONTRACTED_PLUGIN_GUID = "com.y4ngz.company";
         internal const string SHIP_SYSTEMS_PLUGIN_GUID = Y4NGZCore.Lifecycle.ModuleHarmonyIds.ShipSystems;
+        internal const string UI_PLUGIN_GUID = Y4NGZCore.Lifecycle.ModuleHarmonyIds.Ui;
         private const string ContractedAssemblyName = "Y4NGZCompany";
         private const string ShipSystemsAssemblyName = "Y4NGZShipSystems";
+        private const string UiAssemblyName = "Y4NGZUI";
 
         private static readonly bool _contractedLoaded = Chainloader.PluginInfos.ContainsKey(CONTRACTED_PLUGIN_GUID);
         private static readonly bool _shipSystemsLoaded = Chainloader.PluginInfos.ContainsKey(SHIP_SYSTEMS_PLUGIN_GUID);
+        private static readonly bool _uiLoaded = Chainloader.PluginInfos.ContainsKey(UI_PLUGIN_GUID);
         private static Assembly _contractedAssembly;
         private static Assembly _shipSystemsAssembly;
+        private static Assembly _uiAssembly;
 
         /// <summary>True when either supported companion plugin chainloaded in this session.</summary>
         internal static bool IsLoaded => _contractedLoaded || _shipSystemsLoaded;
@@ -55,6 +59,22 @@ namespace Y4NGZCompany.Core.Compat
                 _contractedLoaded,
                 ContractedAssemblyName,
                 ref _contractedAssembly);
+        }
+
+        /// <summary>
+        /// Resolves a type owned by the Y4NGZUI plugin (#660: the theme/HUD substrate moved
+        /// there from Contracted). Same already-loaded-assembly discipline as the others.
+        /// </summary>
+        internal static Type ResolveUiType(string typeName)
+        {
+            if (string.IsNullOrEmpty(typeName))
+                return null;
+
+            return ResolveType(
+                typeName,
+                _uiLoaded,
+                UiAssemblyName,
+                ref _uiAssembly);
         }
 
         /// <summary>

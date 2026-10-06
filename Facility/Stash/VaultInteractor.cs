@@ -15,7 +15,8 @@ namespace Y4NGZCompany.Facility.Stash
     public sealed class VaultInteractor : MonoBehaviour
     {
         public MiniVault Vault;
-        public string DisplayName = "VAULT";
+        // #716 E10: player-facing label. "Company Stash" is the one name this fixture goes by.
+        public string DisplayName = "COMPANY STASH";
         public float InteractRadius = 2.4f;
 
         private Transform _localPlayerTransform;
@@ -82,7 +83,12 @@ namespace Y4NGZCompany.Facility.Stash
                     _promptApplied = true;
                 }
 
-                hud.controlTipLines[0].text = "Open keypad : [E]";
+                // #716 E10: the fixture is called the Company Stash everywhere a player can see
+                // it (scan node, terminal codes, config), so the prompt names it too rather than
+                // naming its keypad. The "[E]" is literal and correct: this is a HUD control tip,
+                // which the game does not key-substitute, and the interaction below polls the E
+                // key directly rather than riding an InteractTrigger.
+                hud.controlTipLines[0].text = "Open Company Stash : [E]";
                 return;
             }
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -33,6 +33,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private const string ViewmodelPrefabName = "Y4NGZ_CCTV_LocalViewmodel";
         private const string ViewmodelControllerName = "Y4NGZ_CCTV_LocalViewmodel";
         private const float RegistrationRetrySeconds = 5f;
+        /// <summary>#716 C5 / MINOR 3. Ceiling for the transient-failure backoff: the delay
+        /// doubles from RegistrationRetrySeconds (5, 10, 20, 40) and then holds here.</summary>
+        private const float MaxRegistrationBackoffSeconds = 60f;
 
         private static readonly BindingFlags ApiFlags = BindingFlags.Public | BindingFlags.Static;
 
@@ -42,6 +45,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static bool _packFailureLogged;
         private static bool _transientRegistrationLogged;
         private static float _nextRegistrationRetryAt;
+        /// <summary>#716 C5. Set once a registration attempt fails for a reason that cannot
+        /// change while the process runs (assets absent from disk, manifest contract mismatch,
+        /// the Interactions API missing outright). Before this latch existed the 5s retry kept
+        /// walking every loaded assembly and stat-ing four files forever on installs without
+        /// Y4NGZInteractions, which the audit measured at 6.19ms on a zero-camera LateUpdate.</summary>
+        private static bool _registrationAbandoned;
+        private static bool _assemblyLoadHookInstalled;
+        /// <summary>#716 C5 / MINOR 3. Current transient-failure delay; 0 until the first one.</summary>
+        private static float _registrationBackoffSeconds;
 
         private static Type _apiType;
         private static Type _packDefinitionType;
@@ -69,7 +81,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         internal static void Tick()
         {
-            if (ConfigEnabled && !_packRegistered)
+            if (ConfigEnabled && !_packRegistered && !_registrationAbandoned)
                 TryRegisterPack(forceRetry: false, out _);
         }
 
@@ -81,6 +93,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             _packFailureLogged = false;
             _transientRegistrationLogged = false;
             _nextRegistrationRetryAt = 0f;
+            _registrationAbandoned = false;
+            _registrationBackoffSeconds = 0f;
             _apiType = null;
             _packDefinitionType = null;
             _interactionDefinitionType = null;
@@ -280,7 +294,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             }
             if (!TryResolveApi(out reason))
             {
-                ScheduleRegistrationRetry();
+                // #716 C5: the only way this becomes true later is Y4NGZInteractions loading,
+                // which the assembly-load hook reports for free.
+                AbandonRegistration(rearmOnAssemblyLoad: true);
                 return false;
             }
 
@@ -302,7 +318,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 {
                     reason = "pack_asset_missing:" + requiredFiles[i];
                     LogPackFailureOnce(reason);
-                    ScheduleRegistrationRetry();
+                    AbandonRegistration(rearmOnAssemblyLoad: false);
                     return false;
                 }
             }
@@ -315,28 +331,28 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 {
                     reason = $"manifest_parse_failed:{worldManifestPath} {manifestDetail}";
                     LogPackFailureOnce(reason);
-                    ScheduleRegistrationRetry();
+                    AbandonRegistration(rearmOnAssemblyLoad: false);
                     return false;
                 }
                 if (!TryParseManifest(viewmodelManifestJson, out CctvOperatorManifest viewmodelManifest, out manifestDetail))
                 {
                     reason = $"manifest_parse_failed:{viewmodelManifestPath} {manifestDetail}";
                     LogPackFailureOnce(reason);
-                    ScheduleRegistrationRetry();
+                    AbandonRegistration(rearmOnAssemblyLoad: false);
                     return false;
                 }
                 if (!ValidateWorldManifest(worldManifest, out manifestDetail))
                 {
                     reason = $"manifest_contract_mismatch:{worldManifestPath} {manifestDetail}";
                     LogPackFailureOnce(reason);
-                    ScheduleRegistrationRetry();
+                    AbandonRegistration(rearmOnAssemblyLoad: false);
                     return false;
                 }
                 if (!ValidateViewmodelManifest(viewmodelManifest, out manifestDetail))
                 {
                     reason = $"manifest_contract_mismatch:{viewmodelManifestPath} {manifestDetail}";
                     LogPackFailureOnce(reason);
-                    ScheduleRegistrationRetry();
+                    AbandonRegistration(rearmOnAssemblyLoad: false);
                     return false;
                 }
 
@@ -369,7 +385,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 {
                     if (reason.IndexOf("not_initialized", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        _nextRegistrationRetryAt = Time.realtimeSinceStartup + RegistrationRetrySeconds;
+                        ScheduleRegistrationRetry();
                         if (!_transientRegistrationLogged)
                         {
                             _transientRegistrationLogged = true;
@@ -381,7 +397,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                     }
 
                     LogPackFailureOnce("registration_failed:" + reason);
-                    ScheduleRegistrationRetry();
+                    // MINOR 3: might be transient, so back off rather than latch permanently.
+                    ScheduleRegistrationBackoff();
                     return false;
                 }
 
@@ -396,7 +413,8 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             {
                 reason = "registration_exception:" + Unwrap(e);
                 LogPackFailureOnce(reason);
-                ScheduleRegistrationRetry();
+                // MINOR 3: a one-off throw must be able to self-heal.
+                ScheduleRegistrationBackoff();
                 return false;
             }
         }
@@ -512,6 +530,58 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static void ScheduleRegistrationRetry()
         {
             _nextRegistrationRetryAt = Time.realtimeSinceStartup + RegistrationRetrySeconds;
+        }
+
+        /// <summary>#716 C5 / MINOR 3. Backoff for failures that MIGHT be transient - the
+        /// registration call itself returning false, or throwing. A permanent latch would stop
+        /// a one-off throw from ever self-healing, and the pre-patch flat 5s retry re-ran the
+        /// assembly walk and four File.Exists calls forever. This doubles the delay from 5s to
+        /// a 60s ceiling, so a transient fault recovers within seconds while a permanent one
+        /// costs one attempt a minute instead of twelve.</summary>
+        private static void ScheduleRegistrationBackoff()
+        {
+            _registrationBackoffSeconds = _registrationBackoffSeconds <= 0f
+                ? RegistrationRetrySeconds
+                : Mathf.Min(_registrationBackoffSeconds * 2f, MaxRegistrationBackoffSeconds);
+            _nextRegistrationRetryAt = Time.realtimeSinceStartup + _registrationBackoffSeconds;
+        }
+
+        /// <summary>#716 C5. Stops the 5s retry for a failure that cannot resolve itself.
+        /// <paramref name="rearmOnAssemblyLoad"/> is only true for "the Interactions assembly is
+        /// not loaded yet": that one genuinely can change later, so a single AppDomain.AssemblyLoad
+        /// subscription (installed once, never per attempt) lifts the latch instead of polling.
+        /// Asset and manifest failures never re-arm - the files are read from the plugin
+        /// directory at a fixed path and do not appear mid-session.</summary>
+        private static void AbandonRegistration(bool rearmOnAssemblyLoad)
+        {
+            _registrationAbandoned = true;
+            if (!rearmOnAssemblyLoad || _assemblyLoadHookInstalled)
+                return;
+
+            try
+            {
+                AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoadedWhileAbandoned;
+                _assemblyLoadHookInstalled = true;
+            }
+            catch
+            {
+                // Subscribing is best-effort; without it the pack simply stays unregistered
+                // for the session, which is the same outcome the retry loop reached anyway.
+            }
+        }
+
+        private static void OnAssemblyLoadedWhileAbandoned(object sender, AssemblyLoadEventArgs args)
+        {
+            if (!_registrationAbandoned || _packRegistered)
+                return;
+
+            string name = args?.LoadedAssembly?.GetName()?.Name;
+            if (name == null || name.IndexOf("Y4NGZInteractions", StringComparison.OrdinalIgnoreCase) < 0)
+                return;
+
+            _registrationAbandoned = false;
+            _resolutionFailureLogged = false;
+            _nextRegistrationRetryAt = 0f;
         }
 
         private static Type FindType(string fullName)

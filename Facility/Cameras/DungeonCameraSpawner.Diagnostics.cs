@@ -342,11 +342,11 @@ namespace Y4NGZCompany.Facility.Cameras
         }
 
         // Phase 1.9 — full-coverage bounds probe. Three boxes per tile,
-        // because ComputeP2 reads placement.LocalBounds (Cecil-confirmed
-        // tile-local AABB) while DunGen's tile.Bounds is frame-unspecified
-        // and may return the world AABB — back-solving observed manor
-        // localPos.y ≈ 15m against the 0.85 height fraction showed the
-        // actual box ComputeP2 reads (LocalBounds) is ~17.6m tall, close
+        // because the Phase 1.9 corner placement read placement.LocalBounds
+        // (Cecil-confirmed tile-local AABB) while DunGen's tile.Bounds is
+        // frame-unspecified and may return the world AABB — back-solving
+        // observed manor localPos.y ≈ 15m against the 0.85 height fraction
+        // showed the actual box it read (LocalBounds) is ~17.6m tall, close
         // to but not the same as the 20–24m tile.Bounds rows the prior
         // probe logged. The geometry fix's safety property is
         // "facility worldAABB.y ≈ facility LocalBounds.y" (within a few
@@ -405,7 +405,7 @@ namespace Y4NGZCompany.Facility.Cameras
                 $"If degenerate set overlaps entirely with E/F sets, the §4 fallback is moot (those tiles are already excluded from placement).");
 
             // Phase 1.9b — shaft-tile entry-floor probe. For each tile
-            // that ComputeP2 routes to wall-mount (tile-local
+            // that the Phase 1.9 corner placement routed to wall-mount (tile-local
             // worldAABB.y > wallMountMinRoomHeightM), log the
             // candidates for "the floor the wall camera SHOULD
             // reference":
@@ -513,15 +513,15 @@ namespace Y4NGZCompany.Facility.Cameras
         // a smaller version of the bug this fix exists to kill.
         //
         // tileWorldToLocal is derived from tile.Placement (the DunGen
-        // source-of-truth TRS — see TilePlacement.ComputeP2 comments for
-        // why tile.transform.worldToLocalMatrix is NOT used here: it was
-        // observed to misalign on rotated tiles in Factory testing).
+        // source-of-truth TRS): tile.transform.worldToLocalMatrix is NOT
+        // used here because it was observed to misalign on rotated tiles in
+        // Factory testing.
         //
         // Degenerate return matches ComputeWorldAabb: zero-size Bounds at
         // the origin (in tile-local that's Vector3.zero) when no child
-        // MeshFilter exists or every sharedMesh is null. Caller
-        // (TilePlacement.ComputeP2) checks size.sqrMagnitude and routes
-        // to the §5 capped fallback in that case.
+        // MeshFilter exists or every sharedMesh is null. Callers check
+        // size.sqrMagnitude and probe the tile's LocalBounds (FallbackBox)
+        // instead in that case.
         // Exposed as internal (was private) so Cameras/Probe/PlacementProbe
         // can call the SAME tile-local AABB the P1.9 placement consumes —
         // duplicating the implementation in the probe would risk drift on
@@ -533,6 +533,52 @@ namespace Y4NGZCompany.Facility.Cameras
                 return new Bounds(Vector3.zero, Vector3.zero);
             }
 
+            // #1271: EntranceRoom.Pick, the promotions, each pick, the support-camera
+            // injector and the radar feeds all ask for the same tiles, and each call
+            // walked the tile with GetComponentsInChildren<MeshFilter>. The result is a
+            // function of the tile's Placement (fixed after generation) and the transforms
+            // under it, so it is reused until that hierarchy gains or loses a transform:
+            // hierarchyCount of the tile's root counts every transform under the dungeon
+            // root, so any object parented into (or out of) any tile - our camera holders,
+            // visuals, alarm bars - clears the whole cache, as does a new dungeon (new
+            // root). Not tracked: a child that moves in place (a sweeping camera head) or a
+            // MeshFilter whose mesh is swapped; neither happens to the tile's own geometry.
+            // Runtime callers after the pass (InteriorSupportCameraInjector,
+            // QuadCameraAssignment, PlacementProbe) therefore get the bounds first computed for a
+            // tile: moving children and mesh swaps that leave hierarchyCount unchanged never
+            // refresh them.
+            Transform root = tile.transform.root;
+            int hierarchyCount = root.hierarchyCount;
+            if (!ReferenceEquals(root, s_aabbCacheRoot) || hierarchyCount != s_aabbCacheHierarchyCount)
+            {
+                s_aabbCache.Clear();
+                s_aabbCacheRoot = root;
+                s_aabbCacheHierarchyCount = hierarchyCount;
+            }
+            int tileId = tile.GetInstanceID();
+            if (s_aabbCache.TryGetValue(tileId, out Bounds cached))
+            {
+                return cached;
+            }
+
+            Bounds computed = ComputeWorldAabbLocalUncached(tile);
+            s_aabbCache[tileId] = computed;
+            return computed;
+        }
+
+        private static readonly Dictionary<int, Bounds> s_aabbCache = new Dictionary<int, Bounds>();
+        private static Transform s_aabbCacheRoot;
+        private static int s_aabbCacheHierarchyCount;
+
+        internal static void ResetTileAabbCache()
+        {
+            s_aabbCache.Clear();
+            s_aabbCacheRoot = null;
+            s_aabbCacheHierarchyCount = 0;
+        }
+
+        private static Bounds ComputeWorldAabbLocalUncached(Tile tile)
+        {
             MeshFilter[] filters = tile.GetComponentsInChildren<MeshFilter>(includeInactive: true);
             if (filters == null || filters.Length == 0)
             {

@@ -24,8 +24,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
     /// </summary>
     internal static class CCTVVanillaMonitorButtons
     {
-        private const string RedHoverTip = "View cameras : [E]";
-        private const string GreyHoverTip = "Switch monitor feed : [E]";
+        // #716 E7: "[LMB]" is the vanilla interact placeholder the game rewrites to the
+        // player's bound interact key when it renders a hover tip. A hard-coded "[E]" told
+        // rebound players the wrong key.
+        private const string RedHoverTip = "View cameras : [LMB]";
+        private const string GreyHoverTip = "Switch monitor feed : [LMB]";
         // #501 — the probe used to be a 1 Hz scene-wide FindObjectsOfType
         // (18.94 ms/pass) that never stopped retrying when a button failed to
         // resolve. It is now scoped to the ship subtree and backs off

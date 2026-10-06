@@ -350,8 +350,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         private static int ResolveMainEntranceFloorBandIndex()
         {
             if (_floorBands.Count == 0) return 0;
-            if (!TryResolveInteriorMainEntrancePosition(out Vector3 entrancePosition))
+            EntranceTeleport entrance = CctvTargetRegistry.FindInteriorMainEntrance();
+            if (entrance == null)
                 return FindNearestFloorBandIndex(0f);
+            Vector3 entrancePosition = (entrance.entrancePoint != null ? entrance.entrancePoint : entrance.transform).position;
 
             int bestFootprint = -1;
             float bestScore = float.PositiveInfinity;
@@ -370,34 +372,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
                 return FindNearestFloorBandIndex(_tileFootprints[bestFootprint].FloorY);
 
             return FindNearestFloorBandIndex(entrancePosition.y);
-        }
-
-        private static bool TryResolveInteriorMainEntrancePosition(out Vector3 position)
-        {
-            EntranceTeleport[] entrances = UnityEngine.Object.FindObjectsByType<EntranceTeleport>(
-                FindObjectsInactive.Include,
-                FindObjectsSortMode.None);
-
-            EntranceTeleport best = null;
-            for (int i = 0; i < entrances.Length; i++)
-            {
-                EntranceTeleport entrance = entrances[i];
-                if (entrance == null || entrance.isEntranceToBuilding) continue;
-                if (best == null || entrance.entranceId == 0)
-                {
-                    best = entrance;
-                    if (entrance.entranceId == 0) break;
-                }
-            }
-
-            if (best != null)
-            {
-                position = best.entrancePoint != null ? best.entrancePoint.position : best.transform.position;
-                return true;
-            }
-
-            position = Vector3.zero;
-            return false;
         }
 
         private static string FormatFloorLabel(int floorRank)

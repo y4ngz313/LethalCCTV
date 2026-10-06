@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
 using DunGen;
 using DunGen.Tags;
 using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Facility.Interior.Placement;
 using Y4NGZCompany.ShipSystems.Surveillance;
 
 namespace Y4NGZCompany.Facility.Cameras
@@ -16,6 +17,7 @@ namespace Y4NGZCompany.Facility.Cameras
         public const string ReasonEntrance = "entrance-tile";
         public const string ReasonFireExit = "fire-exit-tile";
         public const string ReasonCorridor = "corridor";
+        public const string ReasonPaddedCell = "padded-cell";
 
         // Phase 1.7-blocker fix — DunGen Tag.id defaults to -1; an uninitialized
         // RoundManager.MineshaftTunnelTag on a modded moon collides against any
@@ -42,10 +44,10 @@ namespace Y4NGZCompany.Facility.Cameras
         // EntranceTeleport components in LC are not children of any DunGen tile
         // (they live under Environment/Teleports/ as scene-root siblings) and the
         // dungeon-side scripts only spawn after our OnFinishedGeneratingDungeon
-        // hook fires. DungeonCameraSpawner builds the sets via global sweep +
-        // closest-center attribution after the spawn-pipeline coroutine has waited
-        // for the dungeon-side scripts to appear. See 01_phase1_filter_rewrite.md
-        // for the full design.
+        // hook fires. #1283: DungeonCameraSpawner runs synchronously inside that
+        // event and builds the sets by closest-center attribution from the
+        // entrance and fire-exit pads it reads off the tiles' SpawnSyncedObject
+        // markers. See 01_phase1_filter_rewrite.md for the full design.
         public bool ShouldInclude(
             Tile tile,
             out string excludedReason,
@@ -54,6 +56,14 @@ namespace Y4NGZCompany.Facility.Cameras
         {
             excludedReason = null;
             if (tile == null) { excludedReason = "null-tile"; return false; }
+
+            // #874: Core's per-interior exclusion (the Rubber Rooms padded cells) is not a
+            // camera preference, so no config switch and no corridor top-up can re-admit it.
+            if (InteriorPlacementService.IsTileExcludedFromPlacement(tile))
+            {
+                excludedReason = ReasonPaddedCell;
+                return false;
+            }
 
             if (_config.ExcludeMineshaftTunnels.Value && IsMineshaftTunnel(tile))
             {
@@ -220,15 +230,12 @@ namespace Y4NGZCompany.Facility.Cameras
             _mineshaftIdSkipWarnEmitted = true;
 
             int colliders = CountTilesWithTagId(mstId);
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] ============================================================");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] MINESHAFT FILTER DISABLED THIS SESSION (ID-validity guard).");
-            SurveillanceBootstrap.Log.LogWarning($"[LethalCCTV] RoundManager.MineshaftTunnelTag.ID = {mstId} (< 0 = DunGen default).");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] The vanilla mineshaft tag asset is uninitialized on this scene.");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] Using the predicate would falsely match every tile whose Tags");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] list also carries a default-id tag (was 38/38 on the Gray*");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] manor repro). Mineshaft tiles WILL NOT BE EXCLUDED this run.");
-            SurveillanceBootstrap.Log.LogWarning($"[LethalCCTV] Tiles in this dungeon carrying a tag with id={mstId}: {colliders}");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] ============================================================");
+            // #716 F4: was a nine-line banner. One line carries the same facts.
+            SurveillanceBootstrap.Log.LogWarning(
+                "[LethalCCTV] Mineshaft tile filter disabled this session (ID-validity guard): " +
+                $"RoundManager.MineshaftTunnelTag.ID={mstId} (< 0 = DunGen default, tag asset uninitialized on this scene). " +
+                "Using the predicate would falsely match every tile carrying any default-id tag, so mineshaft tiles " +
+                $"will not be excluded this run. Tiles in this dungeon carrying a tag with id={mstId}: {colliders}.");
         }
 
         private static void EmitMineshaftNameSkipWarnOnce(int mstId, string resolvedName)
@@ -236,15 +243,13 @@ namespace Y4NGZCompany.Facility.Cameras
             if (_mineshaftNameSkipWarnEmitted) return;
             _mineshaftNameSkipWarnEmitted = true;
 
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] ============================================================");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] MINESHAFT FILTER DISABLED THIS SESSION (Name second-opinion).");
-            SurveillanceBootstrap.Log.LogWarning($"[LethalCCTV] RoundManager.MineshaftTunnelTag.ID = {mstId} but the DunGen");
-            SurveillanceBootstrap.Log.LogWarning($"[LethalCCTV] TagManager resolves that ID to name '{resolvedName ?? "<null>"}'");
-            SurveillanceBootstrap.Log.LogWarning($"[LethalCCTV] (expected '{ExpectedMineshaftTunnelName}').");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] A mod has rebound or renamed the tag asset; the id-equality");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] predicate is no longer meaningful. Mineshaft tiles WILL NOT");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] BE EXCLUDED this run.");
-            SurveillanceBootstrap.Log.LogWarning("[LethalCCTV] ============================================================");
+            // #716 F4: was a nine-line banner. One line carries the same facts.
+            SurveillanceBootstrap.Log.LogWarning(
+                "[LethalCCTV] Mineshaft tile filter disabled this session (name second-opinion): " +
+                $"RoundManager.MineshaftTunnelTag.ID={mstId} but the DunGen TagManager resolves that ID to " +
+                $"'{resolvedName ?? "<null>"}' (expected '{ExpectedMineshaftTunnelName}'). A mod has rebound or renamed " +
+                "the tag asset, so the id-equality predicate is no longer meaningful and mineshaft tiles will not be " +
+                "excluded this run.");
         }
 
         // Same dungeon resolution path DungeonCameraSpawner uses. Wrapped in

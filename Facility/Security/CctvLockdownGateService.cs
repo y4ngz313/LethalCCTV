@@ -9,6 +9,7 @@ using Y4NGZCompany.Bootstrap;
 using Y4NGZCompany.Core.Compat;
 using Y4NGZCompany.Facility.Interior;
 using Y4NGZCompany.Facility.Shared;
+using SlidingLeafJambClipper = Y4NGZ.Compatibility.SlidingLeafJambClipper;
 using Object = UnityEngine.Object;
 
 namespace Y4NGZCompany.Facility.Security
@@ -26,6 +27,12 @@ namespace Y4NGZCompany.Facility.Security
         private const float DoorClearanceM = 0.06f;
         private const float DoorSearchRadiusM = 5.5f;
         private const float DoorPanelThicknessM = 0.12f;
+        // Mirrors Contracted's gate placement: the plate's back face sits this far in front of the
+        // furthest door-side protrusion inside the opening (vanilla facility handles are separate
+        // meshes reaching 0.12-0.17 m from the leaf centre), instead of 0.06 m off the leaf centre
+        // where the handles poked straight through it.
+        private const float HandleClearanceM = 0.02f;
+        private const float FallbackFrontExtentM = 0.17f;
         private const float GateBlockerThicknessM = 0.28f;
         private const float MainFallbackWidthM = 2.98f;
         private const float MainFallbackHeightM = 3.07f;
@@ -292,8 +299,9 @@ namespace Y4NGZCompany.Facility.Security
                 Vector3 center = measured
                     ? bounds.center
                     : new Vector3(bounds.center.x, bounds.min.y + height * 0.5f, bounds.center.z);
+                float frontExtent = MeasureDoorFrontExtent(renderers, bounds, forward);
                 anchor = new GateAnchor(
-                    center + forward * DoorClearanceM,
+                    center + forward * (frontExtent + HandleClearanceM + DoorPanelThicknessM * 0.5f),
                     Quaternion.LookRotation(forward, Vector3.up),
                     width,
                     height,
@@ -316,6 +324,67 @@ namespace Y4NGZCompany.Facility.Security
                 entrance.entranceId,
                 measured: false);
             return true;
+        }
+
+        /// <summary>
+        /// Furthest reach along <paramref name="forward"/> from the door centre of any renderer that
+        /// sits inside the door's footprint (leaf, handles, push bars). Frames and walls are wider
+        /// than the door and drop out; the result is never shallower than the deepest vanilla handle
+        /// when nothing measurable is found.
+        /// </summary>
+        private static float MeasureDoorFrontExtent(Renderer[] renderers, Bounds door, Vector3 forward)
+        {
+            float extent = Mathf.Max(ProjectedDepth(door, forward) * 0.5f, 0f);
+            bool measuredAny = false;
+            if (renderers != null && door.size.sqrMagnitude > 1e-6f)
+            {
+                Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
+                float halfWidth = ProjectedWidth(door, forward) * 0.5f;
+                const float margin = 0.06f;
+                const float sizeMargin = 0.12f;
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    Renderer renderer = renderers[i];
+                    if (renderer == null || !renderer.enabled || renderer.transform == null
+                        || renderer.gameObject == null || !renderer.gameObject.activeInHierarchy)
+                        continue;
+                    if (!TryGetMeshBounds(renderer, out Bounds mesh))
+                        continue;
+                    Bounds world = default;
+                    bool initialized = false;
+                    EncapsulateTransformed(mesh, renderer.transform.localToWorldMatrix, ref world, ref initialized);
+                    if (!initialized)
+                        continue;
+                    if (HorizontalDistance(world.center, door.center) > DoorSearchRadiusM)
+                        continue;
+                    string descriptor = GetRendererDescriptor(renderer);
+                    if (descriptor.Contains("lethalcctv_alarmlockdowngate")
+                        || descriptor.Contains("containmentlockdowndoors"))
+                        continue;
+                    float lateral = Mathf.Abs(Vector3.Dot(world.center - door.center, right));
+                    if (lateral > halfWidth + margin)
+                        continue;
+                    if (world.max.y < door.min.y - margin || world.min.y > door.max.y + margin)
+                        continue;
+                    if (ProjectedWidth(world, forward) > ProjectedWidth(door, forward) + sizeMargin
+                        || world.size.y > door.size.y + sizeMargin)
+                        continue;
+
+                    Vector3 min = world.min;
+                    Vector3 max = world.max;
+                    for (int corner = 0; corner < 8; corner++)
+                    {
+                        Vector3 point = new Vector3(
+                            (corner & 1) == 0 ? min.x : max.x,
+                            (corner & 2) == 0 ? min.y : max.y,
+                            (corner & 4) == 0 ? min.z : max.z);
+                        extent = Mathf.Max(extent, Vector3.Dot(point - door.center, forward));
+                        measuredAny = true;
+                    }
+                }
+            }
+
+            return measuredAny ? extent : Mathf.Max(extent, FallbackFrontExtentM);
         }
 
         private static Renderer FindBestDoorRenderer(Vector3 entrancePosition, Renderer[] renderers)
@@ -475,7 +544,9 @@ namespace Y4NGZCompany.Facility.Security
                 Renderer renderer = half.GetComponent<Renderer>();
                 if (renderer != null && renderer.material != null)
                     renderer.material.color = new Color(0.12f, 0.14f, 0.16f, 1f);
-                halves.Add(new CctvLockdownGatePanel.SlidingHalf(half.transform, closed, open));
+                SlidingLeafJambClipper clipper = SlidingLeafJambClipper.TryCreate(
+                    half.transform, root.transform, direction, direction * anchor.Width * 0.5f, out _);
+                halves.Add(new CctvLockdownGatePanel.SlidingHalf(half.transform, closed, open, clipper));
             }
             return halves;
         }
@@ -494,7 +565,16 @@ namespace Y4NGZCompany.Facility.Security
                 Vector3 closed = child.localPosition;
                 Vector3 open = closed + Vector3.right * (direction * inVisual.size.x);
                 AddHalfCollider(child, visualScale);
-                halves.Add(new CctvLockdownGatePanel.SlidingHalf(child, closed, open));
+                // #827: clip the leaf at its closed outer edge (the jamb plane) while it travels,
+                // so it grows out of the frame instead of popping into view on the wall.
+                float jambX = direction > 0f ? inVisual.max.x : inVisual.min.x;
+                SlidingLeafJambClipper clipper = SlidingLeafJambClipper.TryCreate(child, visual, direction, jambX, out string clipFailure);
+                if (clipper == null)
+                {
+                    SurveillanceBootstrap.Log?.LogWarning(
+                        $"[LethalCCTV] Lockdown gate half '{child.name}' cannot be jamb-clipped ({clipFailure}); it will slide unclipped.");
+                }
+                halves.Add(new CctvLockdownGatePanel.SlidingHalf(child, closed, open, clipper));
             }
             return halves;
         }
@@ -787,12 +867,15 @@ namespace Y4NGZCompany.Facility.Security
             internal readonly Transform Transform;
             internal readonly Vector3 ClosedLocalPosition;
             internal readonly Vector3 OpenLocalPosition;
+            /// <summary>Hides the part of the leaf outside the jamb while it travels; null keeps a plain slide.</summary>
+            internal readonly SlidingLeafJambClipper Clipper;
 
-            internal SlidingHalf(Transform transform, Vector3 closed, Vector3 open)
+            internal SlidingHalf(Transform transform, Vector3 closed, Vector3 open, SlidingLeafJambClipper clipper = null)
             {
                 Transform = transform;
                 ClosedLocalPosition = closed;
                 OpenLocalPosition = open;
+                Clipper = clipper;
             }
         }
 
@@ -807,12 +890,26 @@ namespace Y4NGZCompany.Facility.Security
             _obstacle = obstacle;
             for (int i = 0; i < _halves.Count; i++)
                 if (_halves[i].Transform != null) _halves[i].Transform.localPosition = _halves[i].OpenLocalPosition;
+            ApplyJambClips();
             SetObstacle(false);
             SetVisible(false);
         }
 
+        private void OnDestroy()
+        {
+            for (int i = 0; i < _halves.Count; i++) _halves[i].Clipper?.Dispose();
+        }
+
+        // Runs before the renderers are shown and after every position write, so no frame ever
+        // draws a leaf outside the opening.
+        private void ApplyJambClips()
+        {
+            for (int i = 0; i < _halves.Count; i++) _halves[i].Clipper?.Apply();
+        }
+
         internal void Close()
         {
+            ApplyJambClips();
             SetVisible(true);
             Restart(Animate(closing: true, CloseDuration, destroyWhenDone: false));
         }
@@ -845,10 +942,12 @@ namespace Y4NGZCompany.Facility.Security
                 float t = 1f - Mathf.Pow(1f - Mathf.Clamp01(elapsed / duration), 3f);
                 for (int i = 0; i < _halves.Count; i++)
                     if (_halves[i].Transform != null) _halves[i].Transform.localPosition = Vector3.Lerp(from[i], to[i], t);
+                ApplyJambClips();
                 yield return null;
             }
             for (int i = 0; i < _halves.Count; i++)
                 if (_halves[i].Transform != null) _halves[i].Transform.localPosition = to[i];
+            ApplyJambClips();
             if (closing) SetObstacle(true);
             else SetVisible(false);
             if (destroyWhenDone) Destroy(gameObject);

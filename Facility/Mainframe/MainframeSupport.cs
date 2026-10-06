@@ -9,6 +9,17 @@ namespace Y4NGZCompany.Facility.Mainframe
     {
         public static MainframeSupport Active { get; private set; }
 
+        // The host selects the physical or owner-only registered prefab. Clients inherit
+        // this serialized identity from that prefab, never from their local config.
+        [SerializeField] private bool _isPhysicalMainframe = true;
+        public bool IsPhysicalMainframe => _isPhysicalMainframe;
+        public override bool IsCctvTargetAvailable => IsPhysicalMainframe && base.IsCctvTargetAvailable;
+
+        internal void ConfigureAsAlarmOwner()
+        {
+            _isPhysicalMainframe = false;
+        }
+
         private NetworkVariable<bool> _isHacked = new NetworkVariable<bool>(false,
             NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
         private NetworkVariable<float> _lockoutEndTime = new NetworkVariable<float>(0f,
@@ -49,7 +60,8 @@ namespace Y4NGZCompany.Facility.Mainframe
 
         protected override void OnEnable()
         {
-            base.OnEnable();
+            if (IsPhysicalMainframe)
+                base.OnEnable();
             if (Active == null) Active = this;
         }
 
@@ -73,6 +85,9 @@ namespace Y4NGZCompany.Facility.Mainframe
 
         public override CctvCommandExecutionResult ExecuteCctvCommand(string command)
         {
+            if (!IsPhysicalMainframe)
+                return CctvCommandExecutionResult.Fail("TARGET UNAVAILABLE");
+
             string normalized = (command ?? string.Empty).Trim().ToLowerInvariant();
             if (normalized != "hack")
                 return CctvCommandExecutionResult.Fail("USE HACK");
@@ -88,7 +103,7 @@ namespace Y4NGZCompany.Facility.Mainframe
         [ServerRpc(RequireOwnership = false)]
         public void MarkHackedServerRpc(ServerRpcParams rpcParams = default)
         {
-            if (!IsServer) return;
+            if (!IsServer || !IsPhysicalMainframe) return;
             if (SurveillanceBootstrap.Config != null && !SurveillanceBootstrap.Config.AllowRemoteHacking.Value)
                 return;
             _isHacked.Value = true;
@@ -99,7 +114,7 @@ namespace Y4NGZCompany.Facility.Mainframe
         [ServerRpc(RequireOwnership = false)]
         public void MarkLockoutServerRpc(float seconds = CctvSupportState.MainframeLockoutSeconds, ServerRpcParams rpcParams = default)
         {
-            if (!IsServer || _isHacked.Value) return;
+            if (!IsServer || !IsPhysicalMainframe || _isHacked.Value) return;
 
             float duration = seconds > 0f ? seconds : CctvSupportState.MainframeLockoutSeconds;
             _lockoutEndTime.Value = Mathf.Max(_lockoutEndTime.Value, Time.unscaledTime + duration);
@@ -113,7 +128,7 @@ namespace Y4NGZCompany.Facility.Mainframe
         [ServerRpc(RequireOwnership = false)]
         public void SetAlarmServerRpc(bool on, ServerRpcParams rpcParams = default)
         {
-            if (!IsServer) return;
+            if (!IsServer || !IsPhysicalMainframe) return;
             if (!_isHacked.Value) return;
 
             if (on)
@@ -133,7 +148,7 @@ namespace Y4NGZCompany.Facility.Mainframe
         [ServerRpc(RequireOwnership = false)]
         public void SilenceSecurityAlarmServerRpc(ServerRpcParams rpcParams = default)
         {
-            if (!IsServer) return;
+            if (!IsServer || !IsPhysicalMainframe) return;
             Y4NGZCompany.Facility.Security.CctvSecurityDirector.SilenceSecurityAlarm();
         }
 

@@ -47,7 +47,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnCycleActivePrevPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             if (IsHackingOverlayOpen)
             {
@@ -77,7 +77,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnCycleActiveNextPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             if (IsHackingOverlayOpen)
             {
@@ -93,7 +93,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnPagePrevPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             if (IsHackingOverlayOpen)
             {
@@ -110,7 +110,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnPageNextPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             if (IsHackingOverlayOpen)
             {
@@ -126,7 +126,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnHackSubmitPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             if (IsMainframeOverlayOpen)
             {
@@ -143,27 +143,27 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void OnPingMarkerPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             if (_placementEditorOpen) return;
             if (_reviewMenuOpen) return;
-            if (IsHackingOverlayOpen) return;
+            if (IsHackingOverlayOpen || IsMainframeOverlayOpen) return;
             if (IsTurretPageActive)
             {
                 ResetStationRadarLookView();
-                CCTVStationEvents.RaiseActionButtonPressed("turret-fire");
                 ShipTurretController.TryFire();
                 return;
             }
             ResetStationRadarLookView();
-            CCTVStationEvents.RaiseActionButtonPressed("station-action");
             PlayInteractSfx();
+            if (IsFacilityFeedActive && CctvDeviceCommandLine.TryOpen(GetActiveCamera())) return;
+            if (TryTriggerCameraContextAction()) return;
             TriggerCameraPing();
         }
 
         private static void OnWalkiePushToTalkPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive()) return;
             // Inside the mainframe INTERCOM submenu, push-to-talk drives the intercom broadcast.
             if (IsMainframeOverlayOpen)
@@ -211,7 +211,7 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
         /// </summary>
         private static void OnToggleControlsOverlayPerformed(InputAction.CallbackContext _)
         {
-            if (!IsFocused) return;
+            if (!IsFocused || CctvDeviceCommandLine.ConsumesInput) return;
             // #579 — the panel this toggled is retired for normal play; the sticky
             // note carries the controls instead. H stays wired only as a debug
             // affordance so the edit-mode panel can be flipped without leaving.
@@ -349,7 +349,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (IsFocused)
             {
                 PlayPageSfx();
-                CCTVStationEvents.RaiseActionButtonPressed("camera-page");
             }
 
             HideCameraScanOverlay();
@@ -450,7 +449,6 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (IsFocused && playFeedback && changed)
             {
                 PlayPageSfx();
-                CCTVStationEvents.RaiseActionButtonPressed("camera-page");
                 CCTVStationEvents.RaiseCameraSelected(ActiveSlot);
             }
             if (IsFacilityFeedActive)
@@ -679,9 +677,10 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void TickStationRadarZoomInput()
         {
+            if (CctvDeviceCommandLine.ConsumesInput) return;
             if (IsStationEditInputActive())
                 return;
-            if (!IsStationRadarLookHeld() || CCTVOperatorStation.IsDebugPlacementActive)
+            if (CCTVOperatorStation.IsDebugPlacementActive || !IsStationCameraControlActive)
                 return;
 
             Mouse mouse = Mouse.current;
@@ -692,7 +691,15 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             if (Mathf.Abs(scroll) < 0.01f)
                 return;
 
-            VanillaRadarFeed.AdjustZoom(scroll / 120f);
+            if (IsStationRadarLookHeld()) VanillaRadarFeed.AdjustZoom(scroll / 120f);
+            else if (IsFacilityFeedActive)
+            {
+                CCTVCamera camera = GetActiveCamera();
+                if (camera?.Cam == null || camera.IsSecurityBroken) return;
+                _zoomByCamera[camera] = Mathf.Clamp01(GetZoom(camera) + scroll / 120f * 0.10f);
+                ApplyZoom(camera);
+                BoostStationCameraRenderCadence();
+            }
         }
 
 

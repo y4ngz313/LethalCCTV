@@ -6,6 +6,7 @@ using System.Reflection;
 using DunGen;
 using GameNetcodeStuff;
 using Y4NGZCompany.Facility.Cameras;
+using Y4NGZCompany.Core;
 using Y4NGZCompany.Core.Compat;
 using LethalCompanyInputUtils.Api;
 using LethalCompanyInputUtils.BindingPathEnums;
@@ -331,6 +332,9 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
             EnsureFocusMachineLoopSource();
             if (_focusMachineLoopSource == null) return;
 
+            // #716 E13: re-focusing inside the wind-down ramp has to claim the source back, or
+            // the ramp still in flight would stop the loop this call just restarted.
+            CctvAudioFade.CancelFade(_focusMachineLoopSource);
             _focusMachineLoopSource.clip = _machineLoopSfx;
             _focusMachineLoopSource.volume = FOCUS_MACHINE_LOOP_VOLUME;
             _focusMachineLoopSource.loop = true;
@@ -342,9 +346,11 @@ namespace Y4NGZCompany.ShipSystems.Surveillance
 
         private static void StopFocusMachineLoop()
         {
+            // #716 E13: sustained hum, so it ramps out instead of clicking off when the
+            // operator leaves the monitor.
             if (_focusMachineLoopSource != null && _focusMachineLoopSource.isPlaying)
             {
-                _focusMachineLoopSource.Stop();
+                CctvAudioFade.StopLoop(_focusMachineLoopSource);
             }
         }
 

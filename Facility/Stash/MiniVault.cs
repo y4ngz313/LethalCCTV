@@ -21,12 +21,14 @@ namespace Y4NGZCompany.Facility.Stash
         private NetworkVariable<int> _globalAttempts = new NetworkVariable<int>(0,
             NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
-        private string _displayName = "VAULT";
+        // #716 E10: player-facing label. "Company Stash" is the one name this fixture goes by;
+        // the MiniVault/Vault type names stay as they are.
+        private string _displayName = "COMPANY STASH";
 
         public int AssignedCode => _assignedCode.Value;
         public bool IsUnlocked => _isUnlocked.Value;
         public int GlobalAttempts => _globalAttempts.Value;
-        public string DisplayName => string.IsNullOrWhiteSpace(_displayName) ? $"VAULT {GetInstanceID():X}" : _displayName;
+        public string DisplayName => string.IsNullOrWhiteSpace(_displayName) ? $"COMPANY STASH {GetInstanceID():X}" : _displayName;
 
         public void InitializeAssignedCode(int code, string displayName)
         {

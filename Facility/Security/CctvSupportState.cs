@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
 
+using Y4NGZCompany.Bootstrap;
+using Y4NGZCompany.Core;
 using Y4NGZCompany.Facility.Stash;
 using Y4NGZCompany.Facility.Mainframe;
 namespace Y4NGZCompany.Facility.Security
@@ -22,6 +24,9 @@ namespace Y4NGZCompany.Facility.Security
         private static int[] _assignedVaultCodes = System.Array.Empty<int>();
         private static VaultCodeDebugEntry[] _debugVaultCodes = System.Array.Empty<VaultCodeDebugEntry>();
         private static readonly HashSet<int> RuntimeStashIds = new HashSet<int>();
+
+        private static bool StashesDisabledByHost =>
+            CctvNetworkRole.IsServer() && !(CctvModuleConfig.CompanyStashesEnabled?.Value ?? true);
 
         public static int[] StashCodes
         {
@@ -80,7 +85,7 @@ namespace Y4NGZCompany.Facility.Security
         {
             EnsureInitialized();
 
-            int vaultCount = Mathf.Max(0, spawnedStashCount);
+            int vaultCount = StashesDisabledByHost ? 0 : Mathf.Max(0, spawnedStashCount);
             _configuredVaultCount = vaultCount;
             _configuredSeed = seed;
             _vaultCodesConfigured = true;
@@ -118,6 +123,12 @@ namespace Y4NGZCompany.Facility.Security
 
         internal static void FinalizeStashCodesForSpawnedCount(int spawnedStashCount)
         {
+            if (StashesDisabledByHost)
+            {
+                ConfigureStashCodesForRound(0);
+                return;
+            }
+
             EnsureInitialized();
             EnsureCodesConfiguredFromRuntimeStashes();
 
@@ -161,6 +172,12 @@ namespace Y4NGZCompany.Facility.Security
                 return;
 
             EnsureInitialized();
+            if (StashesDisabledByHost)
+            {
+                ConfigureStashCodesForRound(0);
+                return;
+            }
+
             if (!RuntimeStashIds.Add(stash.GetInstanceID()))
                 return;
 
@@ -234,6 +251,13 @@ namespace Y4NGZCompany.Facility.Security
 
         private static void EnsureCodesConfiguredFromRuntimeStashes()
         {
+            if (StashesDisabledByHost)
+            {
+                if (!_vaultCodesConfigured || _configuredVaultCount != 0)
+                    ConfigureStashCodesForRound(0);
+                return;
+            }
+
             if (_vaultCodesConfigured)
                 return;
 
